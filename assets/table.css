@@ -1,0 +1,41 @@
+.Select-menu-outer {
+    display : block !important;
+  }
+
+/* Alternate row colors */
+.dash-table-container .dash-spreadsheet-container tr:nth-child(even) {
+    background-color: #f8f9fa;
+}
+
+/* Hover effect */
+.dash-table-container .dash-spreadsheet-container tr:hover {
+    background-color: #e2e6ea;
+}
+
+/* Sticky header */
+.dash-table-container .dash-spreadsheet-container th {
+    position: sticky;
+    top: 0;
+    background: #fff;
+    z-index: 2;
+}
+
+/* Highlight edited cell */
+.dash-cell--focused {
+    background-color: #fff3cd !important;
+}
+
+/* Custom dropdown menu */
+.Select-menu-outer, .Select-menu {
+    z-index: 9999 !important;
+    min-width: 200px !important;
+    max-width: 350px !important;
+    font-size: 1rem;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.dash-table-container, .dbc-row, .dbc-col, .container, .row, .col {
+    overflow: visible !important;
+    max-height: none !important;
+}
