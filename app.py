@@ -687,17 +687,33 @@ help_layout = dbc.Container([
     navbar,
     html.H2("Help & Documentation", className="text-center mt-4"),
     html.Hr(),
+
     html.H4("Overview"),
     html.P(
-        "The Smart Heating Design Tool helps you estimate heat loss, configure radiators and collectors, and analyze system performance."),
+        "The Smart Heating Design Tool helps you estimate heat loss, configure radiators and collectors, and analyze system performance for heat pump systems in renovation cases. "
+        "This tool is part of the Recover project, funded by the Flemish Government, which aims to accelerate the energy transition in residential buildings by supporting the design of efficient and sustainable heating systems."
+    ),
+
+    html.H4("About the Recover Project"),
+    html.P(
+        "Recover is a research and innovation initiative focused on optimizing the renovation of existing buildings with sustainable heating solutions. "
+        "It brings together stakeholders from industry, academia, and government to develop tools and methodologies that support the deployment of low-temperature heating systems, such as heat pumps, in the Flemish building stock."
+    ),
 
     html.H4("How to Use"),
     html.Ul([
-        html.Li("Start with the 'Heat Loss' tab to input building parameters."),
-        html.Li("Configure rooms and ventilation settings."),
-        html.Li("Use the 'Radiators & Collectors' tab to size components."),
-        html.Li("View results and charts in the 'Results' tab."),
+        html.Li("Start with the 'Heat Loss' tab to input building parameters such as insulation levels, surface areas, and outdoor temperature."),
+        html.Li("Configure rooms and ventilation settings to reflect the actual building layout."),
+        html.Li("Use the 'Radiators & Collectors' tab to size components based on calculated heat loads and desired temperature regimes."),
+        html.Li("View results and charts in the 'Results' tab to evaluate system performance and identify potential improvements."),
     ]),
+
+    html.H4("Combined Heat Load and Radiator Calculator"),
+    html.P(
+        "This calculator integrates heat loss estimation with radiator and collector sizing to streamline the design process. "
+        "It supports iterative design by allowing users to adjust parameters and immediately see the impact on system sizing and performance. "
+        "The tool is especially useful in renovation scenarios where existing constraints (e.g., radiator dimensions, insulation levels) must be considered."
+    ),
 
     html.H4("Resources"),
     html.Ul([
@@ -707,7 +723,7 @@ help_layout = dbc.Container([
 
     html.H4("Contact"),
     html.P(
-        "For technical questions, reach out to [Sébastien Pecceu](https://www.office.com/search?q=S%c3%a9bastien+Pecceu&EntityRepresentationId=831e63ab-4d6b-4d24-987e-501d4bf3ef57) or [Jeroen Van der Veken](https://www.office.com/search?q=Jeroen+Van+der+Veken&EntityRepresentationId=2b6c49ec-dfac-4493-b21a-307ea9a03910)[1](https://bbri-my.sharepoint.com/personal/sebastien_pecceu_bbri_be/_layouts/15/Doc.aspx?sourcedoc=%7B0B7F06C5-486C-4717-9F79-28263F4E2DAF%7D&file=20240514_ProgramHeating_HVACTools.pptx&action=edit&mobileredirect=true&DefaultItemOpen=1).")
+        "For technical questions, reach out to Bart Merema or Jeroen Van der Veken.")
 ], className="mb-4")
 # -------------------------
 # Callbacks - Tab 1
