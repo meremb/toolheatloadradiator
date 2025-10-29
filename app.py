@@ -275,6 +275,7 @@ def determine_system_supply_temperature(calc_rows: List[Radiator], cfg: Dict[str
 external_stylesheets = [dbc.themes.ZEPHYR, dbc.icons.BOOTSTRAP]
 app = Dash(__name__, external_stylesheets=external_stylesheets, suppress_callback_exceptions=True)
 app.title = "Smart Heating Design Tool (Dash)"
+server = app.server
 
 # Stores: central state
 stores = [
@@ -1446,7 +1447,4 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
             "0 W", "0 W", "0 kg/h", "0 °C"
         )
 
-
-if __name__ == "__main__":
-    app.run(debug=True)
 
