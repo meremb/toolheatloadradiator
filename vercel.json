@@ -2,7 +2,7 @@
 {
   "functions": {
     "app.py": {
-      "runtime": "python3.11-2"
+      "runtime": "vercel-python@3.12"
     }
   },
   "routes": [
