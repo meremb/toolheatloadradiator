@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 import pandas as pd
 from dash import Dash, dcc, html, dash_table, Input, Output, State
 import plotly.express as px
+import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 
 # --- YOUR BACKEND (unchanged) ---
@@ -15,6 +16,7 @@ from utils.helpers import (
     validate_data, calculate_weighted_delta_t
 )
 
+
 # -------------------------
 # Stateless helper functions
 # -------------------------
@@ -22,6 +24,7 @@ from utils.helpers import (
 def hash_dataframe(df: pd.DataFrame) -> str:
     """Consistent hash for change detection."""
     return hashlib.md5(pd.util.hash_pandas_object(df.fillna("__NaN__"), index=True).values).hexdigest()
+
 
 def default_room_table(num_rooms: int) -> List[Dict[str, Any]]:
     """Default room rows depending on area-estimation mode."""
@@ -38,18 +41,19 @@ def default_room_table(num_rooms: int) -> List[Dict[str, Any]]:
         })
     return rows
 
+
 def compute_room_results(
-    room_rows: List[Dict[str, Any]],
-    uw: float, u_roof: float, u_ground: float, u_glass: float,
-    tout: float,
-    heat_loss_area_estimation: str,
-    ventilation_calculation_method: str,
-    v_system: str,
-    v50: float,
-    neighbour_t: float, un: float, lir: float,
-    wall_height: float,
-    return_detail: bool,
-    add_neighbour_losses: bool
+        room_rows: List[Dict[str, Any]],
+        uw: float, u_roof: float, u_ground: float, u_glass: float,
+        tout: float,
+        heat_loss_area_estimation: str,
+        ventilation_calculation_method: str,
+        v_system: str,
+        v50: float,
+        neighbour_t: float, un: float, lir: float,
+        wall_height: float,
+        return_detail: bool,
+        add_neighbour_losses: bool
 ) -> pd.DataFrame:
     room_results = []
     for row in room_rows:
@@ -76,6 +80,7 @@ def compute_room_results(
         })
     return pd.DataFrame(room_results)
 
+
 def init_radiator_rows(n: int, collector_options: List[str], room_options: List[Any]) -> List[Dict[str, Any]]:
     rows = []
     for i in range(1, n + 1):
@@ -90,11 +95,12 @@ def init_radiator_rows(n: int, collector_options: List[str], room_options: List[
         })
     return rows
 
+
 def resize_radiator_rows(
-    current: List[Dict[str, Any]],
-    desired_num: int,
-    collector_options: List[str],
-    room_options: List[Any]
+        current: List[Dict[str, Any]],
+        desired_num: int,
+        collector_options: List[str],
+        room_options: List[Any]
 ) -> List[Dict[str, Any]]:
     """Append or truncate rows; keep existing values 1:1."""
     rows = (current or []).copy()
@@ -109,8 +115,10 @@ def resize_radiator_rows(
             r["Radiator nr"] = idx
     return rows
 
+
 def init_collector_rows(n: int, start: int = 1) -> List[Dict[str, Any]]:
     return [{"Collector": f"Collector {i}", "Collector circuit length": 0.0} for i in range(start, start + n)]
+
 
 def resize_collector_rows(current: List[Dict[str, Any]], desired: int) -> List[Dict[str, Any]]:
     rows = (current or []).copy()
@@ -120,6 +128,7 @@ def resize_collector_rows(current: List[Dict[str, Any]], desired: int) -> List[D
     elif desired < cur_n:
         rows = rows[:desired]
     return rows
+
 
 def split_heat_loss_to_radiators(radiator_rows: List[Dict[str, Any]], room_results_df: pd.DataFrame) -> pd.DataFrame:
     """Distribute room heat loss over radiators in that room."""
@@ -142,6 +151,7 @@ def split_heat_loss_to_radiators(radiator_rows: List[Dict[str, Any]], room_resul
 
     return heat_loss_df
 
+
 def safe_to_float(x, default=None):
     try:
         if x is None or x == "":
@@ -150,26 +160,68 @@ def safe_to_float(x, default=None):
     except Exception:
         return default
 
+
 # --- UI styles & helpers ---
 CHART_HEIGHT_PX = 460
 
+
 def fix_fig(fig, title=None, height=CHART_HEIGHT_PX):
+    """Apply consistent styling to figures with modern appearance."""
     fig.update_layout(
         height=height,
         autosize=False,
-        margin=dict(l=40, r=20, t=50, b=40),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        transition_duration=0
+        margin=dict(l=60, r=40, t=60, b=60),
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            bgcolor='rgba(255,255,255,0.8)',
+            bordercolor='#ddd',
+            borderwidth=1
+        ),
+        transition_duration=300,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family="Arial, sans-serif", size=12, color="#333"),
+        hoverlabel=dict(
+            bgcolor="white",
+            font_size=13,
+            font_family="Arial, sans-serif"
+        )
     )
     if title:
-        fig.update_layout(title=title)
-    fig.update_yaxes(automargin=True)
-    fig.update_xaxes(automargin=True)
+        fig.update_layout(
+            title=dict(
+                text=title,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=16, family="Arial, sans-serif", color="#2c3e50")
+            )
+        )
+    fig.update_yaxes(
+        automargin=True,
+        showline=True,
+        linewidth=1,
+        linecolor='#ddd',
+        gridcolor='#eee',
+        zeroline=False
+    )
+    fig.update_xaxes(
+        automargin=True,
+        showline=True,
+        linewidth=1,
+        linecolor='#ddd',
+        gridcolor='#eee'
+    )
     return fig
+
 
 def empty_fig(title="", height=CHART_HEIGHT_PX):
     fig = px.scatter()
     return fix_fig(fig, title=title, height=height)
+
 
 ROOM_TYPE_OPTIONS = ["Living", "Kitchen", "Bedroom", "Laundry", "Bathroom", "Toilet"]
 ROOM_TYPE_HELP_MD = (
@@ -181,6 +233,7 @@ ROOM_TYPE_HELP_MD = (
     "- **Bathroom**: 22 °C design, short peaks\n"
     "- **Toilet**: ~18 °C"
 )
+
 
 def determine_system_supply_temperature(calc_rows: List[Radiator], cfg: Dict[str, Any]) -> float:
     """Select system supply T: user override > max(per-radiator) > temporary fallback."""
@@ -213,6 +266,7 @@ def determine_system_supply_temperature(calc_rows: List[Radiator], cfg: Dict[str
     # Temporary fallback until Radiator can always provide a required supply T
     return 55.0
 
+
 # -------------------------
 # Dash app
 # -------------------------
@@ -221,7 +275,6 @@ def determine_system_supply_temperature(calc_rows: List[Radiator], cfg: Dict[str
 external_stylesheets = [dbc.themes.ZEPHYR, dbc.icons.BOOTSTRAP]
 app = Dash(__name__, external_stylesheets=external_stylesheets, suppress_callback_exceptions=True)
 app.title = "Smart Heating Design Tool (Dash)"
-server = app.server
 
 # Stores: central state
 stores = [
@@ -235,7 +288,14 @@ stores = [
 # ===== Navbar =====
 navbar = dbc.Navbar(
     dbc.Container([
-        dbc.NavbarBrand("Smart Heating Design Tool", className="ms-2", class_name="text-center w-100"),
+        html.A(
+            dbc.Row([
+                dbc.Col(html.Img(src="/assets/Recover_logo.png", height="50px"), width="auto"),
+                dbc.Col(dbc.NavbarBrand("Smart Heating Design Tool", className="ms-2"), width="auto"),
+            ], align="center", className="g-0"),
+            href="/",
+            style={"textDecoration": "none"},
+        ),
         dbc.Nav(
             [
                 dbc.NavItem(dbc.NavLink(html.I(className="bi bi-house-door me-1"), " Home", href="/home")),
@@ -244,7 +304,7 @@ navbar = dbc.Navbar(
             navbar=True,
             className="ms-auto",
         ),
-    ]),
+    ], fluid=True),
     color="dark",
     dark=True,
     sticky="top",
@@ -271,10 +331,10 @@ main_layout = dbc.Container(
                         dbc.Tab(label="1️⃣ Heat Loss", tab_id="tab-1", children=[
                             dbc.Card([
                                 dbc.CardBody([
-                                    #html.Div("Inputs", className="section-header"),
+                                    # html.Div("Inputs", className="section-header"),
                                     html.Div([
-                                        #html.H4("Building Parameters", className="card-title"),
-                                        #html.Small("Adjust the inputs, the results update automatically.", className="text-muted"),
+                                        # html.H4("Building Parameters", className="card-title"),
+                                        # html.Small("Adjust the inputs, the results update automatically.", className="text-muted"),
                                         html.Hr(),
                                         dbc.Row([
                                             dbc.Col([
@@ -315,9 +375,9 @@ main_layout = dbc.Container(
                                                     dbc.CardHeader("Number of Rooms"),
                                                     dbc.CardBody([
                                                         dbc.Label("Number of Rooms"),
-                                                    dbc.Input(id="num_rooms", type="number", min=1, value=3, step=1,
-                                                              style={"maxWidth": "160px"}),
-                                                    dbc.FormText("Add rooms first then details."),
+                                                        dbc.Input(id="num_rooms", type="number", min=1, value=3, step=1,
+                                                                  style={"maxWidth": "160px"}),
+                                                        dbc.FormText("Add rooms first then details."),
                                                     ])
                                                 ], className="mb-4"),
                                             ], md=4),
@@ -332,7 +392,8 @@ main_layout = dbc.Container(
                                                                     id="ventilation_calculation_method",
                                                                     options=[
                                                                         {"label": "simple", "value": "simple"},
-                                                                        {"label": "NBN-D-50-001", "value": "NBN-D-50-001"},
+                                                                        {"label": "NBN-D-50-001",
+                                                                         "value": "NBN-D-50-001"},
                                                                     ],
                                                                     value="simple", clearable=False,
                                                                     className="dash-dropdown"
@@ -341,7 +402,8 @@ main_layout = dbc.Container(
                                                                 dbc.Label("Ventilation System"),
                                                                 dcc.Dropdown(
                                                                     id="v_system",
-                                                                    options=[{"label": k, "value": k} for k in ["C", "D"]],
+                                                                    options=[{"label": k, "value": k} for k in
+                                                                             ["C", "D"]],
                                                                     value="C", clearable=False,
                                                                     className="dash-dropdown"
                                                                 ),
@@ -361,7 +423,8 @@ main_layout = dbc.Container(
                                                                 dbc.Input(id="un", type="number", value=1.0, step=0.1),
                                                                 html.Br(),
                                                                 dbc.Label("Infiltration Rate (lir)"),
-                                                                dbc.Input(id="lir", type="number", value=0.2, step=0.05),
+                                                                dbc.Input(id="lir", type="number", value=0.2,
+                                                                          step=0.05),
                                                                 html.Br(),
                                                                 dbc.Label("Wall Height (m)"),
                                                                 dbc.Input(id="wall_height", type="number", value=2.7,
@@ -376,7 +439,8 @@ main_layout = dbc.Container(
                                                                 dbc.Checklist(
                                                                     id="add_neighbour_losses",
                                                                     options=[
-                                                                        {"label": " Add Neighbour Losses", "value": "yes"}],
+                                                                        {"label": " Add Neighbour Losses",
+                                                                         "value": "yes"}],
                                                                     value=[], inline=True
                                                                 ),
                                                             ], title="🔍 Advanced Settings", item_id="advanced"),
@@ -460,162 +524,175 @@ main_layout = dbc.Container(
                                             html.Div(id="room-results-table")
                                         ])
                                     ], className="mb-4", style={
-                                        "backgroundColor": "#f0f4ff",         # light blue background
-                                        "border": "1px solid #cce",           # subtle border
-                                        "boxShadow": "0 0 6px rgba(0,0,0,0.1)" # soft shadow
+                                        "backgroundColor": "#f0f4ff",  # light blue background
+                                        "border": "1px solid #cce",  # subtle border
+                                        "boxShadow": "0 0 6px rgba(0,0,0,0.1)"  # soft shadow
                                     })
                                 ])
                             ], className="mb-4"),
                         ]),
 
                         # ------------- TAB 2 -------------
-                        dbc.Tab(label="2️⃣ Radiators & Collectors", tab_id="tab-2", className="justify-content-center", children=[
-                            dbc.Card([
-                                dbc.CardBody([
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Card([
-                                                dbc.CardHeader("🔧 System Configuration"),
-                                                dbc.CardBody([
-                                                    dbc.Label("Number of radiators"),
-                                                    dbc.Input(id="num_radiators", type="number", min=1, value=3,
-                                                              step=1),
-                                                    html.Br(),
-                                                    dbc.Label("Number of collectors"),
-                                                    dbc.Input(id="num_collectors", type="number", min=1, value=1,
-                                                              step=1),
-                                                    html.Br(),
-                                                    dbc.Label("Valve positions (n)"),
-                                                    dbc.Input(id="positions", type="number", min=1, value=8, step=1),
-                                                    html.Br(),
-                                                    dbc.Label("Valve kv max"),
-                                                    dbc.Input(id="kv_max", type="number", min=0.0, value=0.7,
-                                                              step=0.01),
-                                                    html.Br(),
-                                                    dbc.Label("Delta T (°C)"),
-                                                    dcc.Slider(id="delta_T", min=3, max=20, step=1, value=5,
-                                                               marks={i: str(i) for i in range(3, 21)}),
-                                                    html.Br(),
-                                                    dbc.Label("Supply temperature (°C, empty = auto)"),
-                                                    dbc.Input(id="supply_temp_input", type="number",
-                                                              placeholder="(optional)"),
-                                                    html.Br(),
-                                                    dbc.Checklist(
-                                                        id="fix_diameter",
-                                                        options=[{"label": " Fix same diameter for all radiators",
-                                                                  "value": "yes"}],
-                                                        value=[]
-                                                    ),
-                                                    html.Div([
-                                                        dbc.Label("Fixed diameter (mm)"),
-                                                        dcc.Dropdown(
-                                                            id="fixed_diameter",
-                                                            options=[{"label": str(mm), "value": mm} for mm in
-                                                                     [12, 14, 16, 18, 20]],
-                                                            value=16, clearable=False
-                                                        ),
-                                                    ], id="fixed_diameter_container"),
-                                                ])
-                                            ], className="mb-4"),
-                                        ], md=4),
+                        dbc.Tab(label="2️⃣ Radiators & Collectors", tab_id="tab-2", className="justify-content-center",
+                                children=[
+                                    dbc.Card([
+                                        dbc.CardBody([
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    dbc.Card([
+                                                        dbc.CardHeader("🔧 System Configuration"),
+                                                        dbc.CardBody([
+                                                            dbc.Label("Number of radiators"),
+                                                            dbc.Input(id="num_radiators", type="number", min=1, value=3,
+                                                                      step=1),
+                                                            html.Br(),
+                                                            dbc.Label("Number of collectors"),
+                                                            dbc.Input(id="num_collectors", type="number", min=1,
+                                                                      value=1,
+                                                                      step=1),
+                                                            html.Br(),
+                                                            dbc.Label("Valve positions (n)"),
+                                                            dbc.Input(id="positions", type="number", min=1, value=8,
+                                                                      step=1),
+                                                            html.Br(),
+                                                            dbc.Label("Valve kv max"),
+                                                            dbc.Input(id="kv_max", type="number", min=0.0, value=0.7,
+                                                                      step=0.01),
+                                                            html.Br(),
+                                                            dbc.Label("Delta T (°C)"),
+                                                            dcc.Slider(id="delta_T", min=3, max=20, step=1, value=5,
+                                                                       marks={i: str(i) for i in range(3, 21)}),
+                                                            html.Br(),
+                                                            dbc.Label("Supply temperature (°C, empty = auto)"),
+                                                            dbc.Input(id="supply_temp_input", type="number",
+                                                                      placeholder="(optional)"),
+                                                            html.Br(),
+                                                            dbc.Checklist(
+                                                                id="fix_diameter",
+                                                                options=[
+                                                                    {"label": " Fix same diameter for all radiators",
+                                                                     "value": "yes"}],
+                                                                value=[]
+                                                            ),
+                                                            html.Div([
+                                                                dbc.Label("Fixed diameter (mm)"),
+                                                                dcc.Dropdown(
+                                                                    id="fixed_diameter",
+                                                                    options=[{"label": str(mm), "value": mm} for mm in
+                                                                             [12, 14, 16, 18, 20]],
+                                                                    value=16, clearable=False
+                                                                ),
+                                                            ], id="fixed_diameter_container"),
+                                                        ])
+                                                    ], className="mb-4"),
+                                                ], md=4),
 
-                                        dbc.Col([
+                                                dbc.Col([
+                                                    dbc.Card([
+                                                        dbc.CardHeader("🌡️ Radiator Inputs"),
+                                                        dbc.CardBody([
+                                                            dash_table.DataTable(
+                                                                id="radiator-table",
+                                                                editable=True, row_deletable=False,
+                                                                columns=[
+                                                                    {"name": "Radiator", "id": "Radiator nr",
+                                                                     "type": "numeric",
+                                                                     "editable": False},
+                                                                    {"name": "Room", "id": "Room",
+                                                                     "presentation": "dropdown"},
+                                                                    {"name": "Collector", "id": "Collector",
+                                                                     "presentation": "dropdown"},
+                                                                    {"name": "Radiator power 75/65/20",
+                                                                     "id": "Radiator power 75/65/20",
+                                                                     "type": "numeric"},
+                                                                    {"name": "Length circuit", "id": "Length circuit",
+                                                                     "type": "numeric"},
+                                                                    {"name": "Electric power", "id": "Electric power",
+                                                                     "type": "numeric"},
+                                                                ],
+                                                                data=[], dropdown={}, page_size=10,
+                                                                style_cell={'padding': '8px',
+                                                                            'border': '1px solid #dee2e6'},
+                                                                style_header={'backgroundColor': '#f8f9fa',
+                                                                              'fontWeight': 'bold',
+                                                                              'textAlign': 'center'},
+                                                                style_data_conditional=[
+                                                                                           {'if': {'column_id': c},
+                                                                                            'backgroundColor': '#fffef0'}
+                                                                                           for c in
+                                                                                           ["Room", "Collector",
+                                                                                            "Radiator power 75/65/20",
+                                                                                            "Length circuit",
+                                                                                            "Electric power"]
+                                                                                       ] + [{'if': {'row_index': 'odd'},
+                                                                                             'backgroundColor': 'rgb(248, 248, 248)'}],
+                                                                tooltip_header={
+                                                                    "Radiator power 75/65/20": "Nominal power at 75/65/20 (W).",
+                                                                    "Length circuit": "Pipe circuit length (m) to/from the radiator.",
+                                                                    "Space Temperature": "Target room temperature (°C).",
+                                                                    "Electric power": "Extra electric power added for heating."
+                                                                },
+                                                                tooltip_delay=200, tooltip_duration=None
+                                                            )
+                                                        ])
+                                                    ], className="mb-4"),
+
+                                                    dbc.Card([
+                                                        dbc.CardHeader("🧮 Collectors"),
+                                                        dbc.CardBody([
+                                                            dash_table.DataTable(
+                                                                id="collector-table",
+                                                                editable=True,
+                                                                columns=[
+                                                                    {"name": "Collector", "id": "Collector",
+                                                                     "type": "text"},
+                                                                    {"name": "Collector circuit length",
+                                                                     "id": "Collector circuit length",
+                                                                     "type": "numeric"},
+                                                                ],
+                                                                data=[], page_size=10,
+                                                                style_cell={'padding': '8px',
+                                                                            'border': '1px solid #dee2e6'},
+                                                                style_header={'backgroundColor': '#f8f9fa',
+                                                                              'fontWeight': 'bold',
+                                                                              'textAlign': 'center'},
+                                                                style_data_conditional=[
+                                                                    {'if': {'column_id': 'Collector circuit length'},
+                                                                     'backgroundColor': '#fffef0'}
+                                                                ]
+                                                            )
+                                                        ])
+                                                    ], className="mb-4"),
+                                                ], md=8),
+                                            ]),
+
                                             dbc.Card([
-                                                dbc.CardHeader("🌡️ Radiator Inputs"),
+                                                dbc.CardHeader("📊 Room Heat Loss Results"),
                                                 dbc.CardBody([
                                                     dash_table.DataTable(
-                                                        id="radiator-table",
-                                                        editable=True, row_deletable=False,
+                                                        id="heat-loss-split-table",
                                                         columns=[
-                                                            {"name": "Radiator", "id": "Radiator nr", "type": "numeric",
-                                                             "editable": False},
-                                                            {"name": "Room", "id": "Room", "presentation": "dropdown"},
-                                                            {"name": "Collector", "id": "Collector",
-                                                             "presentation": "dropdown"},
-                                                            {"name": "Radiator power 75/65/20",
-                                                             "id": "Radiator power 75/65/20", "type": "numeric"},
-                                                            {"name": "Length circuit", "id": "Length circuit",
+                                                            {"name": "Radiator", "id": "Radiator nr",
                                                              "type": "numeric"},
-                                                            {"name": "Space Temp (°C)", "id": "Space Temperature",
-                                                             "type": "numeric"},
-                                                            {"name": "Electric power", "id": "Electric power",
-                                                             "type": "numeric"},
-                                                        ],
-                                                        data=[], dropdown={}, page_size=10,
-                                                        style_cell={'padding': '8px', 'border': '1px solid #dee2e6'},
-                                                        style_header={'backgroundColor': '#f8f9fa',
-                                                                      'fontWeight': 'bold', 'textAlign': 'center'},
-                                                        style_data_conditional=[
-                                                                                   {'if': {'column_id': c},
-                                                                                    'backgroundColor': '#fffef0'}
-                                                                                   for c in ["Room", "Collector",
-                                                                                             "Radiator power 75/65/20",
-                                                                                             "Length circuit",
-                                                                                             "Space Temperature",
-                                                                                             "Electric power"]
-                                                                               ] + [{'if': {'row_index': 'odd'},
-                                                                                     'backgroundColor': 'rgb(248, 248, 248)'}],
-                                                        tooltip_header={
-                                                            "Radiator power 75/65/20": "Nominal power at 75/65/20 (W).",
-                                                            "Length circuit": "Pipe circuit length (m) to/from the radiator.",
-                                                            "Space Temperature": "Target room temperature (°C).",
-                                                            "Electric power": "Extra electric power added for heating."
-                                                        },
-                                                        tooltip_delay=200, tooltip_duration=None
-                                                    )
-                                                ])
-                                            ], className="mb-4"),
-
-                                            dbc.Card([
-                                                dbc.CardHeader("🧮 Collectors"),
-                                                dbc.CardBody([
-                                                    dash_table.DataTable(
-                                                        id="collector-table",
-                                                        editable=True,
-                                                        columns=[
-                                                            {"name": "Collector", "id": "Collector", "type": "text"},
-                                                            {"name": "Collector circuit length",
-                                                             "id": "Collector circuit length", "type": "numeric"},
+                                                            {"name": "Room", "id": "Room", "type": "any"},
+                                                            {"name": "Calculated Heat Loss (W)",
+                                                             "id": "Calculated Heat Loss (W)", "type": "numeric"},
                                                         ],
                                                         data=[], page_size=10,
                                                         style_cell={'padding': '8px', 'border': '1px solid #dee2e6'},
                                                         style_header={'backgroundColor': '#f8f9fa',
-                                                                      'fontWeight': 'bold', 'textAlign': 'center'},
-                                                        style_data_conditional=[
-                                                            {'if': {'column_id': 'Collector circuit length'},
-                                                             'backgroundColor': '#fffef0'}
-                                                        ]
+                                                                      'fontWeight': 'bold',
+                                                                      'textAlign': 'center'}
                                                     )
                                                 ])
-                                            ], className="mb-4"),
-                                        ], md=8),
-                                    ]),
-
-                                    dbc.Card([
-                                        dbc.CardHeader("📊 Room Heat Loss Results"),
-                                        dbc.CardBody([
-                                            dash_table.DataTable(
-                                                id="heat-loss-split-table",
-                                                columns=[
-                                                    {"name": "Radiator", "id": "Radiator nr", "type": "numeric"},
-                                                    {"name": "Room", "id": "Room", "type": "any"},
-                                                    {"name": "Calculated Heat Loss (W)",
-                                                     "id": "Calculated Heat Loss (W)", "type": "numeric"},
-                                                ],
-                                                data=[], page_size=10,
-                                                style_cell={'padding': '8px', 'border': '1px solid #dee2e6'},
-                                                style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold',
-                                                              'textAlign': 'center'}
-                                            )
+                                            ], style={
+                                                "backgroundColor": "#f0f4ff",  # light blue background
+                                                "border": "1px solid #cce",  # subtle border
+                                                "boxShadow": "0 0 6px rgba(0,0,0,0.1)"  # soft shadow
+                                            }, className="mb-4"),
                                         ])
-                                    ], style={
-                                        "backgroundColor": "#f0f4ff",         # light blue background
-                                        "border": "1px solid #cce",           # subtle border
-                                        "boxShadow": "0 0 6px rgba(0,0,0,0.1)" # soft shadow
-                                    }, className="mb-4"),
-                                ])
-                            ])
-                        ]),
+                                    ])
+                                ]),
 
                         # ------------- TAB 3 -------------
                         dbc.Tab(label="3️⃣ Results", tab_id="tab-3", className="justify-content-center", children=[
@@ -624,40 +701,171 @@ main_layout = dbc.Container(
                                     html.H4("Results"),
                                     html.Div(id="results-warnings", className="alert alert-warning", role="alert"),
                                     html.Hr(),
-                                    html.H5("Radiators"),
-                                    dash_table.DataTable(
-                                        id="merged-results-table",
-                                        page_size=15,
-                                        style_table={"overflowX": "auto"},
-                                        style_header={'backgroundColor':'#f8f9fa','fontWeight':'bold','textAlign':'center'},
-                                        style_cell={'padding':'8px','textAlign':'left','border':'1px solid #dee2e6'},
-                                        style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(248, 248, 248)'}]
-                                    ),
-
-                                    html.Br(),
-                                    html.H5("Collectors"),
-                                    dash_table.DataTable(
-                                        id="collector-results-table",
-                                        page_size=10,
-                                        style_table={"overflowX": "auto"},
-                                        style_header={'backgroundColor':'#f8f9fa','fontWeight':'bold','textAlign':'center'},
-                                        style_cell={'padding':'8px','textAlign':'left','border':'1px solid #dee2e6'},
-                                        style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(248, 248, 248)'}]
-                                    ),
+                                    html.H5("Performance Metrics"),
+                                    # Summary Cards Row
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardBody([
+                                                    html.Div([
+                                                        html.I(className="bi bi-thermometer-high me-2",
+                                                               style={"fontSize": "2rem", "color": "#e74c3c"}),
+                                                        html.Div([
+                                                            html.H3(id="metric-total-heat-loss", children="0 W",
+                                                                    className="mb-0"),
+                                                            html.P("Total Heat Loss", className="text-muted mb-0 small")
+                                                        ])
+                                                    ], className="d-flex align-items-center")
+                                                ])
+                                            ], className="shadow-sm border-0 h-100"),
+                                        ], md=3, className="mb-3"),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardBody([
+                                                    html.Div([
+                                                        html.I(className="bi bi-fire me-2",
+                                                               style={"fontSize": "2rem", "color": "#f39c12"}),
+                                                        html.Div([
+                                                            html.H3(id="metric-total-power", children="0 W",
+                                                                    className="mb-0"),
+                                                            html.P("Total Radiator Power",
+                                                                   className="text-muted mb-0 small")
+                                                        ])
+                                                    ], className="d-flex align-items-center")
+                                                ])
+                                            ], className="shadow-sm border-0 h-100"),
+                                        ], md=3, className="mb-3"),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardBody([
+                                                    html.Div([
+                                                        html.I(className="bi bi-droplet me-2",
+                                                               style={"fontSize": "2rem", "color": "#3498db"}),
+                                                        html.Div([
+                                                            html.H3(id="metric-flow-rate", children="0 kg/h",
+                                                                    className="mb-0"),
+                                                            html.P("Total Flow Rate", className="text-muted mb-0 small")
+                                                        ])
+                                                    ], className="d-flex align-items-center")
+                                                ])
+                                            ], className="shadow-sm border-0 h-100"),
+                                        ], md=3, className="mb-3"),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardBody([
+                                                    html.Div([
+                                                        html.I(className="bi bi-speedometer2 me-2",
+                                                               style={"fontSize": "2rem", "color": "#27ae60"}),
+                                                        html.Div([
+                                                            html.H3(id="metric-delta-t", children="0 °C",
+                                                                    className="mb-0"),
+                                                            html.P("Weighted ΔT", className="text-muted mb-0 small")
+                                                        ])
+                                                    ], className="d-flex align-items-center")
+                                                ])
+                                            ], className="shadow-sm border-0 h-100"),
+                                        ], md=3, className="mb-3"),
+                                    ], className="mb-4"),
 
                                     html.Hr(),
-                                    html.H5("Charts"),
+                                    html.H5("System Performance"),
+                                    # First row of charts
                                     dbc.Row([
-                                        dbc.Col(dcc.Graph(id="pressure-loss-chart", style={"height": f"{CHART_HEIGHT_PX}px"}, config={"responsive": False}), md=6),
-                                        dbc.Col(dcc.Graph(id="mass-flow-chart", style={"height": f"{CHART_HEIGHT_PX}px"}, config={"responsive": False}), md=6),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("Power Distribution", className="fw-bold"),
+                                                dbc.CardBody(
+                                                    dcc.Graph(id="power-distribution-chart",
+                                                              style={"height": f"{CHART_HEIGHT_PX}px"},
+                                                              config={"displayModeBar": True}),
+                                                    className="p-2"
+                                                )
+                                            ], className="shadow-sm border-0"),
+                                        ], md=8, className="mb-3"),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("Temperature Profile", className="fw-bold"),
+                                                dbc.CardBody(
+                                                    dcc.Graph(id="temperature-profile-chart",
+                                                              style={"height": f"{CHART_HEIGHT_PX}px"},
+                                                              config={"displayModeBar": True}),
+                                                    className="p-2"
+                                                )
+                                            ], className="shadow-sm border-0"),
+                                        ], md=4, className="mb-3"),
                                     ], className="g-3"),
+                                    # Second row of charts
                                     dbc.Row([
-                                        dbc.Col(dcc.Graph(id="valve-position-chart", style={"height": f"{CHART_HEIGHT_PX}px"}, config={"responsive": False}), md=12),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("Pressure Loss Analysis", className="fw-bold"),
+                                                dbc.CardBody(
+                                                    dcc.Graph(id="pressure-loss-chart",
+                                                              style={"height": f"{CHART_HEIGHT_PX}px"},
+                                                              config={"displayModeBar": True}),
+                                                    className="p-2"
+                                                )
+                                            ], className="shadow-sm border-0"),
+                                        ], md=6, className="mb-3"),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("Mass Flow Rate", className="fw-bold"),
+                                                dbc.CardBody(
+                                                    dcc.Graph(id="mass-flow-chart",
+                                                              style={"height": f"{CHART_HEIGHT_PX}px"},
+                                                              config={"displayModeBar": True}),
+                                                    className="p-2"
+                                                )
+                                            ], className="shadow-sm border-0"),
+                                        ], md=6, className="mb-3"),
+                                    ], className="g-3"),
+                                    # Third row - valve position
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("Valve Position Analysis", className="fw-bold"),
+                                                dbc.CardBody(
+                                                    dcc.Graph(id="valve-position-chart",
+                                                              style={"height": f"{CHART_HEIGHT_PX}px"},
+                                                              config={"displayModeBar": True}),
+                                                    className="p-2"
+                                                )
+                                            ], className="shadow-sm border-0"),
+                                        ], md=12, className="mb-3"),
                                     ], className="g-3"),
 
                                     html.Hr(),
                                     html.H5("Summary"),
                                     html.Div(id="summary-metrics", className="alert alert-info"),
+
+                                    html.Hr(),
+                                    html.H5("Detailed Results"),
+
+                                    html.H6("Radiators", className="mt-4 mb-3"),
+                                    dash_table.DataTable(
+                                        id="merged-results-table",
+                                        page_size=15,
+                                        style_table={"overflowX": "auto"},
+                                        style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold',
+                                                      'textAlign': 'center'},
+                                        style_cell={'padding': '8px', 'textAlign': 'left',
+                                                    'border': '1px solid #dee2e6'},
+                                        style_data_conditional=[
+                                            {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(248, 248, 248)'}]
+                                    ),
+
+                                    html.H6("Collectors", className="mt-4 mb-3"),
+                                    dash_table.DataTable(
+                                        id="collector-results-table",
+                                        page_size=10,
+                                        style_table={"overflowX": "auto"},
+                                        style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold',
+                                                      'textAlign': 'center'},
+                                        style_cell={'padding': '8px', 'textAlign': 'left',
+                                                    'border': '1px solid #dee2e6'},
+                                        style_data_conditional=[
+                                            {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(248, 248, 248)'}]
+                                    ),
                                 ])
                             ])
                         ]),
@@ -702,10 +910,13 @@ help_layout = dbc.Container([
 
     html.H4("How to Use"),
     html.Ul([
-        html.Li("Start with the 'Heat Loss' tab to input building parameters such as insulation levels, surface areas, and outdoor temperature."),
+        html.Li(
+            "Start with the 'Heat Loss' tab to input building parameters such as insulation levels, surface areas, and outdoor temperature."),
         html.Li("Configure rooms and ventilation settings to reflect the actual building layout."),
-        html.Li("Use the 'Radiators & Collectors' tab to size components based on calculated heat loads and desired temperature regimes."),
-        html.Li("View results and charts in the 'Results' tab to evaluate system performance and identify potential improvements."),
+        html.Li(
+            "Use the 'Radiators & Collectors' tab to size components based on calculated heat loads and desired temperature regimes."),
+        html.Li(
+            "View results and charts in the 'Results' tab to evaluate system performance and identify potential improvements."),
     ]),
 
     html.H4("Combined Heat Load and Radiator Calculator"),
@@ -725,6 +936,8 @@ help_layout = dbc.Container([
     html.P(
         "For technical questions, reach out to Bart Merema or Jeroen Van der Veken.")
 ], className="mb-4")
+
+
 # -------------------------
 # Callbacks - Tab 1
 # -------------------------
@@ -750,22 +963,24 @@ def build_room_table(num_rooms):
         num_rooms = 1
 
     columns = [
-        {"name": "Room #",              "id": "Room #",             "type": "numeric"},
-        {"name": "Indoor Temp (°C)",    "id": "Indoor Temp (°C)",   "type": "numeric", "editable": True, "presentation": "input"},
-        {"name": "Floor Area (m²)",     "id": "Floor Area (m²)",    "type": "numeric"},
-        {"name": "Walls external",      "id": "Walls external",     "type": "numeric", "presentation": "dropdown"},
-        {"name": "Room Type",           "id": "Room Type",          "type": "text", "presentation": "dropdown"},
-        {"name": "On Ground",           "id": "On Ground",          "type": "any",  "presentation": "dropdown"},
-        {"name": "Under Roof",          "id": "Under Roof",         "type": "any",  "presentation": "dropdown"},
+        {"name": "Room #", "id": "Room #", "type": "numeric"},
+        {"name": "Indoor Temp (°C)", "id": "Indoor Temp (°C)", "type": "numeric", "editable": True,
+         "presentation": "input"},
+        {"name": "Floor Area (m²)", "id": "Floor Area (m²)", "type": "numeric"},
+        {"name": "Walls external", "id": "Walls external", "type": "numeric", "presentation": "dropdown"},
+        {"name": "Room Type", "id": "Room Type", "type": "text", "presentation": "dropdown"},
+        {"name": "On Ground", "id": "On Ground", "type": "any", "presentation": "dropdown"},
+        {"name": "Under Roof", "id": "Under Roof", "type": "any", "presentation": "dropdown"},
     ]
     data = default_room_table(num_rooms)
     dropdown = {
-        "Room Type":  {"options": [{"label": str(v), "value": v} for v in ROOM_TYPE_OPTIONS]},
-        "On Ground":  {"options": [{"label": "No", "value": False}, {"label": "Yes", "value": True}]},
+        "Room Type": {"options": [{"label": str(v), "value": v} for v in ROOM_TYPE_OPTIONS]},
+        "On Ground": {"options": [{"label": "No", "value": False}, {"label": "Yes", "value": True}]},
         "Under Roof": {"options": [{"label": "No", "value": False}, {"label": "Yes", "value": True}]},
-        "Walls external": {"options": [{"label": str(v), "value": v} for v in [1,2,3,4]]},
+        "Walls external": {"options": [{"label": str(v), "value": v} for v in [1, 2, 3, 4]]},
     }
     return columns, data, dropdown
+
 
 @app.callback(
     Output("room-results-store", "data"),
@@ -782,8 +997,8 @@ def build_room_table(num_rooms):
     Input("add_neighbour_losses", "value"),
 )
 def compute_rooms_and_table(
-    room_rows, uw, u_roof, u_ground, u_glass, tout,
-    vcalc, vsys, v50, neighbour_t, un, lir, wall_height, return_detail, add_neighbour_losses
+        room_rows, uw, u_roof, u_ground, u_glass, tout,
+        vcalc, vsys, v50, neighbour_t, un, lir, wall_height, return_detail, add_neighbour_losses
 ):
     # Enforce limits for "Walls external" and "Indoor Temp (°C)"
     for row in (room_rows or []):
@@ -801,7 +1016,7 @@ def compute_rooms_and_table(
         if "Walls external" in row:
             try:
                 w = int(row["Walls external"])
-                if w not in [1,2,3,4]:
+                if w not in [1, 2, 3, 4]:
                     row["Walls external"] = 2
             except Exception:
                 row["Walls external"] = 2
@@ -831,10 +1046,11 @@ def compute_rooms_and_table(
         data=records,
         page_size=10,
         style_table={"overflowX": "auto"},
-        style_cell={'padding':'8px', 'border': '1px solid #dee2e6'},
-        style_header={'backgroundColor':'#f8f9fa','fontWeight':'bold','textAlign':'center'},
+        style_cell={'padding': '8px', 'border': '1px solid #dee2e6'},
+        style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold', 'textAlign': 'center'},
     )
     return records, table
+
 
 # -------------------------
 # Callbacks - Tab 2
@@ -848,6 +1064,7 @@ def toggle_fixed_diameter(checklist):
     if "yes" in (checklist or []):
         return {"display": "block"}
     return {"display": "none"}
+
 
 @app.callback(
     Output("config-store", "data"),
@@ -873,6 +1090,7 @@ def update_config(nr, nc, pos, kvmax, dT, tsupply, fixlist, fixed_mm):
     }
     return cfg
 
+
 @app.callback(
     Output("radiator-data-store", "data"),
     Output("collector-data-store", "data"),
@@ -892,7 +1110,7 @@ def ensure_tables_and_dropdowns(cfg, room_results_records, radiator_store, colle
     # Rooms options
     room_df = pd.DataFrame(room_results_records or [])
     room_options = sorted(room_df["Room"].unique().tolist()) if not room_df.empty else [1, 2, 3]
-    collector_options = [f"Collector {i+1}" for i in range(num_collectors)]
+    collector_options = [f"Collector {i + 1}" for i in range(num_collectors)]
 
     # Radiator rows
     current_rows = radiator_store or []
@@ -915,6 +1133,7 @@ def ensure_tables_and_dropdowns(cfg, room_results_records, radiator_store, colle
 
     return current_rows, current_collectors, current_rows, dropdown, current_collectors
 
+
 @app.callback(
     Output("radiator-data-store", "data", allow_duplicate=True),
     Input("radiator-table", "data"),
@@ -923,6 +1142,7 @@ def ensure_tables_and_dropdowns(cfg, room_results_records, radiator_store, colle
 def write_radiator_edits_back(rows):
     return rows or []
 
+
 @app.callback(
     Output("collector-data-store", "data", allow_duplicate=True),
     Input("collector-table", "data"),
@@ -930,6 +1150,7 @@ def write_radiator_edits_back(rows):
 )
 def write_collector_edits_back(rows):
     return rows or []
+
 
 @app.callback(
     Output("heat-loss-split-store", "data"),
@@ -942,6 +1163,7 @@ def recompute_heat_loss_split(radiator_rows, room_results_records):
     room_df = pd.DataFrame(room_results_records or [])
     split_df = split_heat_loss_to_radiators(rad_rows, room_df)
     return split_df.to_dict("records"), split_df.to_dict("records")
+
 
 # -------------------------
 # Callbacks - Tab 3 (calculations & charts)
@@ -957,18 +1179,26 @@ def recompute_heat_loss_split(radiator_rows, room_results_records):
     Output("mass-flow-chart", "figure"),
     Output("valve-position-chart", "figure"),
     Output("summary-metrics", "children"),
+    Output("power-distribution-chart", "figure"),
+    Output("temperature-profile-chart", "figure"),
+    Output("metric-total-heat-loss", "children"),
+    Output("metric-total-power", "children"),
+    Output("metric-flow-rate", "children"),
+    Output("metric-delta-t", "children"),
     Input("radiator-data-store", "data"),
     Input("collector-data-store", "data"),
     Input("heat-loss-split-store", "data"),
     Input("config-store", "data"),
+    Input("room-table", "data"),
 )
-def compute_results(radiator_rows, collector_rows, split_rows, cfg):
+def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
     warnings = []
     if not radiator_rows or not collector_rows or not split_rows:
         return (html.Div("⚠️ Compute heat loss and configure radiators/collectors in Tab 1 & 2 first."),
                 [], [], [], [],
-                empty_fig(""), empty_fig(""), empty_fig(""),
-                "")
+                empty_fig(""), empty_fig(""), empty_fig(""), "",
+                empty_fig(""), empty_fig(""),
+                "0 W", "0 W", "0 kg/h", "0 °C")
 
     rad_df = pd.DataFrame(radiator_rows)
     col_df = pd.DataFrame(collector_rows)
@@ -977,11 +1207,24 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg):
     if "Radiator nr" not in rad_df.columns or "Radiator nr" not in split_df.columns:
         warnings.append("Radiator nr column missing unexpectedly.")
         return (html.Div("; ".join(warnings)), [], [], [], [],
-                empty_fig(""), empty_fig(""), empty_fig(""), "")
+                empty_fig(""), empty_fig(""), empty_fig(""), "",
+                empty_fig(""), empty_fig(""),
+                "0 W", "0 W", "0 kg/h", "0 °C")
 
     rad_df = rad_df.merge(split_df[["Radiator nr", "Calculated heat loss"]], on="Radiator nr", how="left")
 
-    numeric_cols = ["Radiator power 75/65/20", "Calculated heat loss", "Length circuit", "Space Temperature", "Electric power"]
+    # Merge Indoor Temperature from room table to get actual Space Temperature
+    if room_rows:
+        room_temp_df = pd.DataFrame(room_rows)
+        if "Room #" in room_temp_df.columns and "Indoor Temp (°C)" in room_temp_df.columns:
+            room_temp_df = room_temp_df[["Room #", "Indoor Temp (°C)"]].rename(columns={"Room #": "Room"})
+            rad_df = rad_df.merge(room_temp_df, on="Room", how="left")
+            # Use Indoor Temp as Space Temperature, fallback to existing Space Temperature or 20.0
+            rad_df["Space Temperature"] = rad_df["Indoor Temp (°C)"].fillna(
+                rad_df.get("Space Temperature", 20.0)).fillna(20.0)
+
+    numeric_cols = ["Radiator power 75/65/20", "Calculated heat loss", "Length circuit", "Space Temperature",
+                    "Electric power"]
     for c in numeric_cols:
         if c in rad_df.columns:
             rad_df[c] = pd.to_numeric(rad_df[c], errors="coerce")
@@ -1018,7 +1261,7 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg):
             rad_df["Diameter"] = cfg.get("fixed_diameter", 16)
         else:
             rad_df["Diameter"] = [r.calculate_diameter(POSSIBLE_DIAMETERS) for r in calc_rows]
-
+        rad_df['Diameter'] = rad_df['Diameter'].max()
         rad_df["Pressure loss"] = [
             Circuit(length_circuit=row.get("Length circuit", 0.0) or 0.0,
                     diameter=row.get("Diameter", 16) or 16,
@@ -1052,16 +1295,104 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg):
         collector_cols = [{"name": c, "id": c} for c in col_df.columns]
         collector_data = col_df.to_dict("records")
 
+        # Calculate metrics
+        weighted_delta_t = calculate_weighted_delta_t(calc_rows, merged_df)
+        total_mass_flow_rate = float(
+            pd.to_numeric(merged_df.get("Mass flow rate", pd.Series()), errors="coerce").fillna(0).sum())
+        total_heat_loss = merged_df.get("Calculated heat loss", pd.Series()).fillna(0).sum()
+        total_power = merged_df.get("Radiator power 75/65/20", pd.Series()).fillna(0).sum()
+
+        # Create Power Distribution Chart (grouped bar chart showing required vs available power)
+        if "Radiator power 75/65/20" in merged_df.columns and "Calculated heat loss" in merged_df.columns:
+            fig_power = go.Figure()
+            fig_power.add_trace(go.Bar(
+                x=merged_df["Radiator nr"],
+                y=merged_df["Radiator power 75/65/20"],
+                name='Radiator Power',
+                marker_color='#3498db',
+                hovertemplate='<b>Radiator %{x}</b><br>Power: %{y:.0f} W<extra></extra>'
+            ))
+            fig_power.add_trace(go.Bar(
+                x=merged_df["Radiator nr"],
+                y=merged_df["Calculated heat loss"],
+                name='Required Power',
+                marker_color='#e74c3c',
+                hovertemplate='<b>Radiator %{x}</b><br>Required: %{y:.0f} W<extra></extra>'
+            ))
+            fig_power.update_layout(barmode='group')
+            fig_power = fix_fig(fig_power, "Radiator Power vs Required Heat Loss")
+        else:
+            fig_power = empty_fig("Power distribution data not available")
+
+        # Create Temperature Profile Chart
+        if "Supply Temperature" in merged_df.columns and "Return Temperature" in merged_df.columns and "Space Temperature" in merged_df.columns:
+            fig_temp = go.Figure()
+            fig_temp.add_trace(go.Scatter(
+                x=merged_df["Radiator nr"],
+                y=merged_df["Supply Temperature"],
+                mode='lines+markers',
+                name='Supply',
+                line=dict(color='#e74c3c', width=3),
+                marker=dict(size=8),
+                hovertemplate='<b>Radiator %{x}</b><br>Supply: %{y:.1f}°C<extra></extra>'
+            ))
+            fig_temp.add_trace(go.Scatter(
+                x=merged_df["Radiator nr"],
+                y=merged_df["Return Temperature"],
+                mode='lines+markers',
+                name='Return',
+                line=dict(color='#3498db', width=3),
+                marker=dict(size=8),
+                hovertemplate='<b>Radiator %{x}</b><br>Return: %{y:.1f}°C<extra></extra>'
+            ))
+            fig_temp.add_trace(go.Scatter(
+                x=merged_df["Radiator nr"],
+                y=merged_df["Space Temperature"],
+                mode='lines+markers',
+                name='Space',
+                line=dict(color='#27ae60', width=2, dash='dash'),
+                marker=dict(size=6),
+                hovertemplate='<b>Radiator %{x}</b><br>Space: %{y:.1f}°C<extra></extra>'
+            ))
+            fig_temp = fix_fig(fig_temp, "Temperature Profile")
+        else:
+            fig_temp = empty_fig("Temperature data not available")
+
+        # Create Pressure Loss Chart (enhanced bar chart with color gradient)
         if "Total Pressure Loss" in merged_df.columns:
-            fig_pressure = fix_fig(px.bar(merged_df, x="Radiator nr", y="Total Pressure Loss"), "Total Pressure Loss per Radiator")
+            fig_pressure = px.bar(
+                merged_df,
+                x="Radiator nr",
+                y="Total Pressure Loss",
+                color="Total Pressure Loss",
+                color_continuous_scale="Viridis",
+                hover_data=["Collector"] if "Collector" in merged_df.columns else None
+            )
+            fig_pressure.update_traces(
+                hovertemplate='<b>Radiator %{x}</b><br>Pressure Loss: %{y:.2f} kPa<extra></extra>'
+            )
+            fig_pressure = fix_fig(fig_pressure, "Total Pressure Loss per Radiator")
         else:
             fig_pressure = empty_fig("Total Pressure Loss (column not found)")
 
+        # Create Mass Flow Rate Chart (enhanced bar chart)
         if "Mass flow rate" in merged_df.columns:
-            fig_mass = fix_fig(px.bar(merged_df, x="Radiator nr", y="Mass flow rate"), "Mass Flow Rate per Radiator")
+            fig_mass = px.bar(
+                merged_df,
+                x="Radiator nr",
+                y="Mass flow rate",
+                color="Mass flow rate",
+                color_continuous_scale="Blues",
+                hover_data=["Collector"] if "Collector" in merged_df.columns else None
+            )
+            fig_mass.update_traces(
+                hovertemplate='<b>Radiator %{x}</b><br>Flow Rate: %{y:.3f} kg/h<extra></extra>'
+            )
+            fig_mass = fix_fig(fig_mass, "Mass Flow Rate per Radiator")
         else:
             fig_mass = empty_fig("Mass Flow Rate (column not found)")
 
+        # Create Valve Position Chart (scatter with markers)
         valve_y = None
         for candidate in ["Valve position", "kv_position", "Valve pressure loss N"]:
             if candidate in merged_df.columns:
@@ -1069,28 +1400,53 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg):
                 break
 
         if valve_y:
-            fig_valve = fix_fig(px.scatter(merged_df, x="Radiator nr", y=valve_y), f"Valve metric: {valve_y}")
+            fig_valve = px.bar(
+                merged_df,
+                x="Radiator nr",
+                y=valve_y,
+                color=valve_y,
+                color_continuous_scale="RdYlGn_r",
+                hover_data=["Collector"] if "Collector" in merged_df.columns else None
+            )
+            fig_valve.update_traces(
+                hovertemplate=f'<b>Radiator %{{x}}</b><br>{valve_y}: %{{y:.2f}}<extra></extra>'
+            )
+            fig_valve = fix_fig(fig_valve, f"Valve Analysis: {valve_y}")
         else:
             fig_valve = empty_fig("Valve (column not found)")
 
-        weighted_delta_t = calculate_weighted_delta_t(calc_rows, merged_df)
-        total_mass_flow_rate = float(pd.to_numeric(merged_df.get("Mass flow rate", pd.Series()), errors="coerce").fillna(0).sum())
+        # Format metrics
+        metric_total_heat_loss = f"{total_heat_loss:,.0f} W" if total_heat_loss > 0 else "0 W"
+        metric_total_power = f"{total_power:,.0f} W" if total_power > 0 else "0 W"
+        metric_flow_rate = f"{total_mass_flow_rate:.2f} kg/h" if total_mass_flow_rate > 0 else "0 kg/h"
+        metric_delta_t = f"{weighted_delta_t:.2f} °C" if weighted_delta_t > 0 else "0 °C"
+
         summary = html.Ul([
             html.Li(f"Weighted Delta T: {weighted_delta_t:.2f} °C"),
             html.Li(f"Total Mass Flow Rate: {total_mass_flow_rate:.2f} kg/h"),
+            html.Li(f"Total Heat Loss: {total_heat_loss:,.0f} W"),
+            html.Li(f"Total Radiator Power: {total_power:,.0f} W"),
             html.Li(f"Radiators: {len(rad_df)} — Collectors: {len(col_df)}")
         ])
 
         warn_div = html.Div("; ".join(warnings)) if warnings else html.Div()
-        return warn_div, merged_cols, merged_data, collector_cols, collector_data, fig_pressure, fig_mass, fig_valve, summary
+        return (
+            warn_div, merged_cols, merged_data, collector_cols, collector_data,
+            fig_pressure, fig_mass, fig_valve, summary,
+            fig_power, fig_temp,
+            metric_total_heat_loss, metric_total_power, metric_flow_rate, metric_delta_t
+        )
 
     except Exception as e:
         warn = html.Div(f"❌ Error during calculation: {e}")
-        return (warn, [], [], [], [], empty_fig(""), empty_fig(""), empty_fig(""), "")
+        return (
+            warn, [], [], [], [],
+            empty_fig(""), empty_fig(""), empty_fig(""), "",
+            empty_fig(""), empty_fig(""),
+            "0 W", "0 W", "0 kg/h", "0 °C"
+        )
 
 
-
-
-
-
+if __name__ == "__main__":
+    app.run(debug=True)
 
