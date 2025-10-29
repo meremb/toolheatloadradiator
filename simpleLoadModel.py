@@ -104,7 +104,7 @@ class RoomLoadCalculator:
                 'neighbourLosses': neighbour_losses,
                 'atticLosses': attic_heat_loss,
             }
-        return total_heat_loss
+        return np.round(total_heat_loss, 0)
 
     def compute_heat_loss_areas(self) -> Dict[str, float]:
         e = 0.3
