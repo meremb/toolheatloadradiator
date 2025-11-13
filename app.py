@@ -7,7 +7,7 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, no_update, c
 import plotly.express as px
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
-from simpleLoadModel import RoomLoadCalculator
+from utils.simpleLoadModel import RoomLoadCalculator
 from utils.helpers import (
     POSSIBLE_DIAMETERS, Radiator, Circuit, Collector, Valve,
     validate_data, calculate_weighted_delta_t
@@ -349,10 +349,10 @@ main_layout = dbc.Container(
                                                 html.H4("Hoe te gebruiken?", className="mb-3"),
                                                 html.Ul([
                                                     html.Li("Selecteer hieronder de modus voor warmteverlies"),
-                                                    html.Li("Voer gebouwparameters in bij 'Warmteverlies'"),
-                                                    html.Li("Configureer ruimtes voor indeling"),
-                                                    html.Li("Dimensioneer componenten bij 'Radiatoren & Collectoren'"),
-                                                    html.Li("Bekijk resultaten en grafieken bij 'Resultaten'"),
+                                                    html.Li("Voer gebouwparameters in bij 'Heat Loss'"),
+                                                    html.Li("Configureer ruimtes voor indeling bij 'Heat Loss' 'Room Configuration"),
+                                                    html.Li("Dimensioneer componenten bij 'Radiators & Collectors'"),
+                                                    html.Li("Bekijk resultaten en grafieken bij 'Results'"),
                                                 ]),
                                             ])
                                         ),
