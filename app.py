@@ -1111,7 +1111,8 @@ help_layout = dbc.Container([
     ),
     html.H4("Hulpmiddelen"),
     html.Ul([
-        html.Li(dcc.Link("HeatLoad EPB Tool", href="https://tool.smartgeotherm.be/verw/ruimte", target="_blank")),
+        html.Li(dcc.Link("HeatLoad Tool", href="https://heatload.buildwise.be/", target="_blank")),
+        html.Li(dcc.Link("Powerheat Tool", href="https://powerheat.buildwise.be/", target="_blank")),
         html.Li(dcc.Link("SmartHeating Project Overzicht", href="https://smartheating.be", target="_blank")),
     ]),
     html.H4("Contact"),
