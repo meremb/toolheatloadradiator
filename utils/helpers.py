@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 
-POSSIBLE_DIAMETERS = [8, 10, 12, 13, 14, 16, 20, 22, 28, 36]
+POSSIBLE_DIAMETERS = [8, 10, 12, 13, 14, 16, 20, 22, 25, 28, 36]
 T_FACTOR = 49.83
 EXPONENT_RADIATOR = 1.34
 PRESSURE_LOSS_BOILER = 350
@@ -153,12 +153,81 @@ class Collector:
 class Valve:
     kv_max: float = 0.7  # Default kv_max value
     n: int = 100  # Default number of valve positions
+    valve_name: Optional[str] = None
+
+    # Valve configurations
+    VALVE_CONFIGS = {
+        "Danfoss RA-N 10 (3/8)": {
+            "positions": 8,  # 0-5 positions
+            "kv_values": [0.04, 0.08, 0.12, 0.19, 0.25, 0.33, 0.38, 0.56],
+            "description": "Danfoss RA-N 10 (3/8) - 8-position TRV"
+        },
+        "Danfoss RA-N 15 (1/2)": {
+            "positions": 8,  # 0-5 positions
+            "kv_values": [0.04, 0.08, 0.12, 0.20, 0.30, 0.40, 0.51, 0.73],
+            "description": "Danfoss RA-N 10 (1/2) - 8-position TRV"
+        },
+        "Danfoss RA-N 20 (3/4)": {
+            "positions": 8,  # 0-5 positions
+            "kv_values": [0.10, 0.15, 0.17, 0.26, 0.35, 0.46, 0.73, 1.04],
+            "description": "Danfoss RA-N 20 (3/4) - 8-position TRV"
+        },
+        "Oventrop DN15 (1/2)": {
+            "positions": 9,  # 0-6 positions
+            "kv_values": [0.05, 0.09, 0.14, 0.20, 0.26, 0.32, 0.43, 0.57, 0.67],
+            "description": "Oventrop DN15 (1/2) - 9-position TRV"
+        },
+        "Heimeier (1/2)": {
+            "positions": 8,  # 0-4 positions
+            "kv_values": [0.049, 0.09, 0.15, 0.265, 0.33, 0.47, 0.59, 0.67],
+            "description": "Heimeier (1/2) - 8-position TRV"
+        },
+        "Vogel und Noot": {
+            "positions": 5,  # 0-5 positions
+            "kv_values": [0.13, 0.30, 0.43, 0.58, 0.75],
+            "description": "Vogel und Noot - 5-position TRV"
+        },
+        "Comap": {
+            "positions": 6,  # 0-5 positions
+            "kv_values": [0.028, 0.08, 0.125, 0.24, 0.335, 0.49],
+            "description": "Comap - 6-position TRV"
+        }
+    }
+
+    @classmethod
+    def get_valve_names(cls) -> List[str]:
+        """Return list of available valve names including 'Custom' option."""
+        return ["Custom"] + list(cls.VALVE_CONFIGS.keys())
+
+    def get_config(self) -> Optional[dict]:
+        """Get the valve configuration if a predefined valve is selected."""
+        if not self.valve_name or self.valve_name == "Custom":
+            return None
+        return self.VALVE_CONFIGS.get(self.valve_name)
+
+    def get_kv_at_position(self, position: int) -> float:
+        """Get the kv value at a specific position."""
+        config = self.get_config()
+        if config:
+            return config["kv_values"][min(position, len(config["kv_values"]) - 1)]
+        # For custom valve, calculate kv linearly
+        return (position / (self.n - 1)) * self.kv_max if self.n > 1 else 0.0
+
 
     def calculate_pressure_valve_kv(self, mass_flow_rate: float) -> float:
         """
         Calculate pressure loss for thermostatic valve at position N.
         """
-        pressure_loss_valve = 97180 * (mass_flow_rate / 1000 / self.kv_max) ** 2
+        kv = self.kv_max
+        config = self.get_config()
+        if config:
+            # Use the maximum kv value for pressure loss calculation
+            kv = config["kv_values"][-1]
+
+        if kv <= 0:
+            return float('inf')
+
+        pressure_loss_valve = 97180 * (mass_flow_rate / 1000 / kv) ** 2
         return round(pressure_loss_valve, 1)
 
     def calculate_kv_needed(self, merged_df: pd.DataFrame) -> pd.DataFrame:
@@ -170,6 +239,7 @@ class Valve:
         maximum_pressure = max(merged_df['Total pressure valve circuit'])
         merged_df['Pressure difference valve'] = maximum_pressure - merged_df['Total Pressure Loss']
         merged_df['kv_needed'] = (merged_df['Mass flow rate'] / 1000) / (merged_df['Pressure difference valve'] / 100000) ** 0.5
+        ## here we alredy have the kv needed for each radiator than we could just use a lookup table to find the position for the custom valve
         return merged_df
 
     def calculate_valve_position(self, a: float, b: float, c: float, kv_needed: np.ndarray) -> np.ndarray:
@@ -197,17 +267,34 @@ class Valve:
         Calculate the valve positions and update the DataFrame with the results.
         """
         merged_df = self.calculate_kv_needed(merged_df)
-        a, b, c = 0.0114, -0.0086, 0.0446
-        initial_positions = self.calculate_valve_position(a, b, c, merged_df['kv_needed'].to_numpy())
+        config = self.get_config()
 
-        if custom_kv_max is not None and n is not None:
-            self.kv_max = custom_kv_max
-            self.n = n
-            adjusted_positions = self.adjust_position_with_custom_values(merged_df['kv_needed'].to_numpy())
-            merged_df['Valve position'] = adjusted_positions.flatten()
+        if config:
+            # Use predefined valve positions
+            kv_values = np.array(config["kv_values"])
+            n_positions = len(kv_values)
+
+            def find_nearest_position(kv_needed):
+                # Find the first position where kv_value >= kv_needed
+                for i, kv in enumerate(kv_values):
+                    if kv >= kv_needed:
+                        return i
+                return n_positions - 1  # Return max position if kv_needed > all kv_values
+
+            merged_df['Valve position'] = merged_df['kv_needed'].apply(find_nearest_position)
+            merged_df['Valve kv'] = merged_df['Valve position'].apply(lambda x: kv_values[x])
         else:
-            initial_positions = np.ceil(initial_positions)
-            merged_df['Valve position'] = initial_positions.flatten()
+            a, b, c = 0.0114, -0.0086, 0.0446
+            initial_positions = self.calculate_valve_position(a, b, c, merged_df['kv_needed'].to_numpy())
+
+            if custom_kv_max is not None and n is not None:
+                self.kv_max = custom_kv_max
+                self.n = n
+                adjusted_positions = self.adjust_position_with_custom_values(merged_df['kv_needed'].to_numpy())
+                merged_df['Valve position'] = adjusted_positions.flatten()
+            else:
+                initial_positions = np.ceil(initial_positions)
+                merged_df['Valve position'] = initial_positions.flatten()
 
         return merged_df
 
@@ -358,6 +445,9 @@ def load_collector_data(num_collectors: int) -> pd.DataFrame:
     }
 
     return pd.DataFrame(collector_initial_data, columns=collector_columns)
+
+
+
 
 
 
