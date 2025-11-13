@@ -824,7 +824,7 @@ main_layout = dbc.Container(
                                             dbc.Card([
                                                 dbc.CardBody([
                                                     html.Div([
-                                                        html.I(className="bi bi-thermometer-high me-2", style={"fontSize": "2rem", "color": "#e74c3c"}),
+                                                        html.I(className="bi bi-building me-2", style={"fontSize": "2rem", "color": "#e74c3c"}),
                                                         html.Div([
                                                             html.H3(id="metric-total-heat-loss", children="0 W", className="mb-0"),
                                                             html.P("Total Heat Loss", className="text-muted mb-0 small")
@@ -832,7 +832,7 @@ main_layout = dbc.Container(
                                                     ], className="d-flex align-items-center")
                                                 ])
                                             ], className="shadow-sm border-0 h-100"),
-                                        ], md=3, className="mb-3"),
+                                        ], md=2, className="mb-3"),
                                         dbc.Col([
                                             dbc.Card([
                                                 dbc.CardBody([
@@ -845,7 +845,7 @@ main_layout = dbc.Container(
                                                     ], className="d-flex align-items-center")
                                                 ])
                                             ], className="shadow-sm border-0 h-100"),
-                                        ], md=3, className="mb-3"),
+                                        ], md=2, className="mb-3"),
                                         dbc.Col([
                                             dbc.Card([
                                                 dbc.CardBody([
@@ -858,7 +858,7 @@ main_layout = dbc.Container(
                                                     ], className="d-flex align-items-center")
                                                 ])
                                             ], className="shadow-sm border-0 h-100"),
-                                        ], md=3, className="mb-3"),
+                                        ], md=2, className="mb-3"),
                                         dbc.Col([
                                             dbc.Card([
                                                 dbc.CardBody([
@@ -867,6 +867,19 @@ main_layout = dbc.Container(
                                                         html.Div([
                                                             html.H3(id="metric-delta-t", children="0 °C", className="mb-0"),
                                                             html.P("Weighted ΔT", className="text-muted mb-0 small")
+                                                        ])
+                                                    ], className="d-flex align-items-center")
+                                                ])
+                                            ], className="shadow-sm border-0 h-100"),
+                                        ], md=2, className="mb-3"),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardBody([
+                                                    html.Div([
+                                                        html.I(className="bi bi-thermometer-high me-2", style={"fontSize": "2rem", "color": "#e74c3c"}),
+                                                        html.Div([
+                                                            html.H3(id="metric-highest-supply", children="N/A", className="mb-0"),
+                                                            html.P("Highest Supply T", className="text-muted mb-0 small")
                                                         ])
                                                     ], className="d-flex align-items-center")
                                                 ])
@@ -1005,7 +1018,8 @@ help_layout = dbc.Container([
     ),
     html.H4("Hulpmiddelen"),
     html.Ul([
-        html.Li(dcc.Link("HeatLoad EPB Tool", href="https://tool.smartgeotherm.be/verw/ruimte", target="_blank")),
+        html.Li(dcc.Link("HeatLoad Tool", href="https://heatload.buildwise.be/", target="_blank")),
+	    html.Li(dcc.Link("Powerheat Tool", href="https://powerheat.buildwise.be/", target="_blank")),
         html.Li(dcc.Link("SmartHeating Project Overzicht", href="https://smartheating.be", target="_blank")),
     ]),
     html.H4("Contact"),
@@ -1379,6 +1393,7 @@ def recompute_heat_loss_split(radiator_rows, room_results_records):
     Output("metric-total-power", "children"),
     Output("metric-flow-rate", "children"),
     Output("metric-delta-t", "children"),
+    Output("metric-highest-supply", "children"),
     Input("radiator-data-store", "data"),
     Input("collector-data-store", "data"),
     Input("heat-loss-split-store", "data"),
@@ -1474,6 +1489,13 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         ]
 
         merged_df = Collector(name="").calculate_total_pressure_loss(rad_df, col_df)
+
+        max_return_idx = merged_df['Return Temperature'].idxmax()
+        radiator_nr = merged_df.loc[max_return_idx, 'Radiator nr']
+        supply_temp = merged_df.loc[max_return_idx, 'Supply Temperature']
+
+
+
         # Get valve configuration from config store or use defaults
         valve_type = cfg.get("valve_type", "Custom")
         
@@ -1619,12 +1641,15 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         metric_total_power = f"{total_power:,.0f} W" if total_power > 0 else "0 W"
         metric_flow_rate = f"{total_mass_flow_rate:.2f} kg/h" if total_mass_flow_rate > 0 else "0 kg/h"
         metric_delta_t = f"{weighted_delta_t:.2f} °C" if weighted_delta_t > 0 else "0 °C"
+        metric_highest_supply = f"{supply_temp:.1f}°C - Radiator {radiator_nr}"
+
 
         summary = html.Ul([
             html.Li(f"Weighted Delta T: {weighted_delta_t:.2f} °C"),
             html.Li(f"Total Mass Flow Rate: {total_mass_flow_rate:.2f} kg/h"),
             html.Li(f"Total Heat Loss: {total_heat_loss:,.0f} W"),
             html.Li(f"Total Radiator Power: {total_power:,.0f} W"),
+            html.Li(f"Highest supply T: {metric_highest_supply}"),
             html.Li(f"Radiators: {len(rad_df)} — Collectors: {len(col_df)}")
         ])
 
@@ -1633,7 +1658,7 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
             warn_div, merged_cols, merged_data, collector_cols, collector_data,
             fig_pressure, fig_mass, fig_valve, summary,
             fig_power, fig_temp,
-            metric_total_heat_loss, metric_total_power, metric_flow_rate, metric_delta_t
+            metric_total_heat_loss, metric_total_power, metric_flow_rate, metric_delta_t, metric_highest_supply
         )
 
     except Exception as e:
@@ -1642,7 +1667,7 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
             warn, [], [], [], [],
             empty_fig(""), empty_fig(""), empty_fig(""), "",
             empty_fig(""), empty_fig(""),
-            "0 W", "0 W", "0 kg/h", "0 °C"
+            "0 W", "0 W", "0 kg/h", "0 °C", "0 °C"
         )
 
 # --------------------------
@@ -1719,4 +1744,3 @@ def update_valve_config(selected_valve, positions, kv_max, current_cfg):
             print(f"Error updating valve config: {e}")
     
     return current_cfg
-
