@@ -1,26 +1,33 @@
-# app_combined_dash_bootstrap.py
+# app_combined_dash_bootstrap.py (patched)
 import hashlib
 import math
 from typing import List, Dict, Any
-
 import pandas as pd
-from dash import Dash, dcc, html, dash_table, Input, Output, State
+from dash import Dash, dcc, html, dash_table, Input, Output, State, no_update, callback_context  # <- added no_update
 import plotly.express as px
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
-
-# --- YOUR BACKEND (unchanged) ---
-from simpleLoadModel import RoomLoadCalculator
+from utils.simpleLoadModel import RoomLoadCalculator
 from utils.helpers import (
     POSSIBLE_DIAMETERS, Radiator, Circuit, Collector, Valve,
     validate_data, calculate_weighted_delta_t
 )
 
+INSULATION_U_VALUES = {
+    "not insulated": {"wall": 1.3, "roof": 1.0, "ground": 1.2},
+    "bit insulated": {"wall": 0.6, "roof": 0.4, "ground": 0.5},
+    "insulated well": {"wall": 0.3, "roof": 0.2, "ground": 0.3},
+}
+GLAZING_U_VALUES = {
+    "single": 5.0,
+    "double": 2.8,
+    "triple": 0.8,
+}
 
-# -------------------------
+
+# --------------------------
 # Stateless helper functions
-# -------------------------
-
+# --------------------------
 def hash_dataframe(df: pd.DataFrame) -> str:
     """Consistent hash for change detection."""
     return hashlib.md5(pd.util.hash_pandas_object(df.fillna("__NaN__"), index=True).values).hexdigest()
@@ -134,21 +141,18 @@ def split_heat_loss_to_radiators(radiator_rows: List[Dict[str, Any]], room_resul
     """Distribute room heat loss over radiators in that room."""
     if room_results_df is None or room_results_df.empty or not radiator_rows:
         return pd.DataFrame(columns=["Radiator nr", "Calculated Heat Loss (W)", "Room"])
-
     rad_df = pd.DataFrame(radiator_rows)
     heat_loss_df = pd.DataFrame({
         "Radiator nr": rad_df["Radiator nr"],
         "Calculated Heat Loss (W)": 0.0,
         "Room": rad_df["Room"]
     })
-
     room_heat_map = room_results_df.set_index("Room")["Total Heat Loss (W)"].to_dict()
     for room, idxs in rad_df.groupby("Room").groups.items():
         n_rad = len(idxs)
         if room in room_heat_map and n_rad > 0:
             split_load = room_heat_map[room] / n_rad
             heat_loss_df.loc[idxs, "Calculated Heat Loss (W)"] = split_load
-
     return heat_loss_df
 
 
@@ -161,7 +165,7 @@ def safe_to_float(x, default=None):
         return default
 
 
-# --- UI styles & helpers ---
+# ---------- UI styles & helpers ----------
 CHART_HEIGHT_PX = 460
 
 
@@ -224,14 +228,15 @@ def empty_fig(title="", height=CHART_HEIGHT_PX):
 
 
 ROOM_TYPE_OPTIONS = ["Living", "Kitchen", "Bedroom", "Laundry", "Bathroom", "Toilet"]
+
 ROOM_TYPE_HELP_MD = (
     "**Room Type** influences heat loss / ventilation defaults.\n\n"
-    "- **Living**: 20–21 °C\n"
-    "- **Kitchen**: 18–20 °C\n"
-    "- **Bedroom**: 16–18 °C\n"
+    "- **Living**: 20–21 °C\n"
+    "- **Kitchen**: 18–20 °C\n"
+    "- **Bedroom**: 16–18 °C\n"
     "- **Laundry**: humid space, more ventilation\n"
-    "- **Bathroom**: 22 °C design, short peaks\n"
-    "- **Toilet**: ~18 °C"
+    "- **Bathroom**: 22 °C design, short peaks\n"
+    "- **Toilet**: ~18 °C"
 )
 
 
@@ -240,7 +245,6 @@ def determine_system_supply_temperature(calc_rows: List[Radiator], cfg: Dict[str
     user_ts = cfg.get("supply_temp_input", None)
     if user_ts is not None:
         return float(user_ts)
-
     candidate_supply_ts = []
     for r in calc_rows:
         t_sup = getattr(r, "supply_temperature", None)
@@ -259,18 +263,13 @@ def determine_system_supply_temperature(calc_rows: List[Radiator], cfg: Dict[str
                     candidate_supply_ts.append(t_val)
             except Exception:
                 pass
-
     if candidate_supply_ts:
         return max(candidate_supply_ts)
-
     # Temporary fallback until Radiator can always provide a required supply T
     return 55.0
 
 
-# -------------------------
-# Dash app
-# -------------------------
-
+# ---------- Dash app ----------
 # Use a modern Bootstrap theme + icons
 external_stylesheets = [dbc.themes.ZEPHYR, dbc.icons.BOOTSTRAP]
 app = Dash(__name__, external_stylesheets=external_stylesheets, suppress_callback_exceptions=True)
@@ -284,6 +283,8 @@ stores = [
     dcc.Store(id="collector-data-store"),
     dcc.Store(id="heat-loss-split-store"),
     dcc.Store(id="config-store"),
+    # NEW: mode store ("unknown" = calculate, "known" = manual)
+    dcc.Store(id="heat-load-mode-store", data="unknown"),
 ]
 
 # ===== Navbar =====
@@ -317,6 +318,7 @@ app.layout = html.Div([
     html.Div(id="page-content")
 ])
 
+# ---------- Main layout ----------
 main_layout = dbc.Container(
     [
         navbar,
@@ -325,215 +327,373 @@ main_layout = dbc.Container(
             dbc.Col([
                 dbc.Tabs(
                     id="tabs",
-                    active_tab="tab-1",
+                    active_tab="tab-0",  # <- start at the new Start tab
                     className="justify-content-center",
                     children=[
-                        # ------------- TAB 1 -------------
+                        # --- TAB 0 (Start) ---
+                        # --- TAB 0 (Start) ---
+                        dbc.Tab(
+                            label="0️⃣ Start",
+                            tab_id="tab-0",
+                            children=[
+                                # Introductie en functionaliteiten
+                                dbc.Row([
+                                    dbc.Col(
+                                        dbc.Card(
+                                            dbc.CardBody([
+                                                html.H4("Wat doet deze tool?", className="mb-3"),
+                                                html.Ul([
+                                                    html.Li("Berekenen van warmteverliezen per ruimte"),
+                                                    html.Li("Dimensioneren van radiatoren en leidingwerk"),
+                                                    html.Li("Bepalen van instellingen van thermostaatkranen"),
+                                                    html.Li(
+                                                        "Scenario-analyse (aanpassen U-waarde wand > toevoertemperatuur)"),
+                                                    html.Li("Optimalisatie voor energie-efficiëntie en comfort"),
+                                                ]),
+                                            ])
+                                        ),
+                                        md=6
+                                    ),
+                                    dbc.Col(
+                                        dbc.Card(
+                                            dbc.CardBody([
+                                                html.H4("Hoe te gebruiken?", className="mb-3"),
+                                                html.Ul([
+                                                    html.Li("Selecteer hieronder de modus voor warmteverlies"),
+                                                    html.Li("Voer gebouwparameters in bij 'Warmteverlies'"),
+                                                    html.Li("Configureer ruimtes voor indeling"),
+                                                    html.Li("Dimensioneer componenten bij 'Radiatoren & Collectoren'"),
+                                                    html.Li("Bekijk resultaten en grafieken bij 'Resultaten'"),
+                                                ]),
+                                            ])
+                                        ),
+                                        md=6
+                                    ),
+                                ], className="mb-4"),
+
+                                # Warmteverlismodus (prominent blok)
+                                html.Div(
+                                    [
+                                        html.H4("Stap 1: Kies hoe je warmteverliezen bepaalt", className="mb-3"),
+                                        dbc.RadioItems(
+                                            id="heat-load-mode",
+                                            options=[
+                                                {"label": "Ik ken de warmteverliezen per ruimte (handmatig ingeven)",
+                                                 "value": "known"},
+                                                {"label": "Ik ken NIET de warmteverliezen per ruimte (berekenen)",
+                                                 "value": "unknown"},
+                                            ],
+                                            value=None,
+                                            inline=False,
+                                            inputClassName="me-2",
+                                            className="mb-3",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.P(html.B("Handmatig ingeven:")),
+                                                html.Ul([
+                                                    html.Li("Je hebt al een berekening (software of adviseur)"),
+                                                    html.Li("Je typt of plakt lasten per kamer in Tab 1"),
+                                                ]),
+                                                html.P(html.B("Laten berekenen:")),
+                                                html.Ul([
+                                                    html.Li(
+                                                        "Je geeft gebouw-/ruimte-invoer om warmteverlies te berekenen"),
+                                                ]),
+                                            ],
+                                            className="mb-2"
+                                        ),
+                                        dbc.Alert(
+                                            [html.Strong("Tip: "),
+                                             "Je kunt op elk moment van modus wisselen; je invoer blijft waar mogelijk bewaard."],
+                                            color="info",
+                                            className="mt-2"
+                                        ),
+                                    ],
+                                    className="p-3 mb-4 border rounded bg-light"
+                                ),
+                            ]
+                        ),
+
+                        # --- TAB 1 (Heat Loss) ---
                         dbc.Tab(label="1️⃣ Heat Loss", tab_id="tab-1", children=[
                             dbc.Card([
                                 dbc.CardBody([
-                                    # html.Div("Inputs", className="section-header"),
-                                    html.Div([
-                                        # html.H4("Building Parameters", className="card-title"),
-                                        # html.Small("Adjust the inputs, the results update automatically.", className="text-muted"),
-                                        html.Hr(),
-                                        dbc.Row([
-                                            dbc.Col([
-                                                dbc.Card([
-                                                    dbc.CardHeader("🏠 Building Envelope"),
-                                                    dbc.CardBody([
-                                                        dbc.Label("Wall U-value (W/m²K)"),
-                                                        dbc.Input(id="uw", type="number", value=1.0, step=0.05),
-                                                        dbc.FormText("External wall U-value"),
-                                                        html.Br(),
+                                    # NEW banner showing current mode
+                                    dbc.Alert(id="heat-load-mode-banner", color="secondary", className="mb-3"),
 
-                                                        dbc.Label("Roof U-value (W/m²K)"),
-                                                        dbc.Input(id="u_roof", type="number", value=0.2, step=0.05),
-                                                        dbc.FormText("Roof U-value"),
-                                                        html.Br(),
+                                    # Inputs section
+                                    html.Hr(),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("📐 Insulation level"),
+                                                dbc.CardBody([
+                                                    dbc.Label("Wall"),
+                                                    dcc.Dropdown(
+                                                        id="wall_insulation_state",
+                                                        options=[
+                                                            {"label": "Not Insulated (0 cm)", "value": "not insulated"},
+                                                            {"label": "Insulated (5 cm)", "value": "bit insulated"},
+                                                            {"label": "Insulated well (10 cm)",
+                                                             "value": "insulated well"},
+                                                        ],
+                                                        value="bit insulated",  # default
+                                                        clearable=False,
+                                                        className="mb-2"
+                                                    ),
+                                                    dbc.Label("Roof"),
+                                                    dcc.Dropdown(
+                                                        id="roof_insulation_state",
+                                                        options=[
+                                                            {"label": "Not insulated (0 cm)", "value": "not insulated"},
+                                                            {"label": "Insulated (5 cm)", "value": "bit insulated"},
+                                                            {"label": "Insulated well (>10 cm)",
+                                                             "value": "insulated well"},
+                                                        ],
+                                                        value="bit insulated",  # default
+                                                        clearable=False,
+                                                    ),
+                                                    dbc.Label("Ground"),
+                                                    dcc.Dropdown(
+                                                        id="ground_insulation_state",
+                                                        options=[
+                                                            {"label": "Not insulated (0 cm)", "value": "not insulated"},
+                                                            {"label": "Insulated (5 cm)", "value": "bit insulated"},
+                                                            {"label": "Insulated well (>10 cm)",
+                                                             "value": "insulated well"},
+                                                        ],
+                                                        value="bit insulated",  # default
+                                                        clearable=False,
+                                                        className="mb-2"
+                                                    ),
+                                                    dbc.Label("Glazing Type"),
+                                                    dcc.Dropdown(
+                                                        id="glazing_type",
+                                                        options=[
+                                                            {"label": "Single", "value": "single"},
+                                                            {"label": "Double", "value": "double"},
+                                                            {"label": "Triple", "value": "triple"},
+                                                        ],
+                                                        value="double",  # default
+                                                        clearable=False,
+                                                        className="mb-2"
+                                                    ),
+                                                    dbc.FormText(
+                                                        "Selecting an insulation or glazing type sets a typical U-value, but you can override it manually"),
+                                                ])
+                                            ], className="mb-4", id="building-insulation-card"),
+                                        ], md=3),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("🏠 Building Envelope"),
+                                                dbc.CardBody([
+                                                    dbc.Label("Wall U-value (W/m²K)"),
+                                                    dbc.Input(id="uw", type="number", value=1.0, step=0.05),
+                                                    dbc.FormText("External wall U-value"),
+                                                    html.Br(),
+                                                    dbc.Label("Roof U-value (W/m²K)"),
+                                                    dbc.Input(id="u_roof", type="number", value=0.2, step=0.05),
+                                                    dbc.FormText("Roof U-value"),
+                                                    html.Br(),
+                                                    dbc.Label("Ground U-value (W/m²K)"),
+                                                    dbc.Input(id="u_ground", type="number", value=0.3, step=0.05),
+                                                    dbc.FormText("Slab-on-grade U-value"),
+                                                    html.Br(),
+                                                    dbc.Label("Glazing U-value (W/m²K)"),
+                                                    dbc.Input(id="u_glass", type="number", value=2.8, step=0.05),
+                                                    dbc.FormText("Window glazing U-value"),
+                                                ])
+                                            ], className="mb-4", id="building-envelope-card"),
+                                        ], md=3),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("🌡️ Outdoor Conditions"),
+                                                dbc.CardBody([
+                                                    dbc.Label("Outdoor Temperature (°C)"),
+                                                    dbc.Input(id="tout", type="number", value=-7.0, step=0.5),
+                                                    dbc.FormText("Design outdoor winter temperature"),
+                                                ])
+                                            ], className="mb-4", id="outdoor-conditions-card"),
+                                            dbc.Card([
+                                                dbc.CardHeader("Number of Rooms"),
+                                                dbc.CardBody([
+                                                    dbc.Label("Number of Rooms"),
+                                                    dbc.Input(
+                                                        id="num_rooms", type="number", min=1, value=3, step=1,
+                                                        style={"maxWidth": "160px"}
+                                                    ),
+                                                    dbc.FormText("Add rooms first then details."),
+                                                ])
+                                            ], className="mb-4"),
+                                        ], md=3),
+                                        dbc.Col([
+                                            dbc.Card([
+                                                dbc.CardHeader("⚙️ Additional Settings"),
+                                                dbc.CardBody([
+                                                    dbc.Accordion([
+                                                        dbc.AccordionItem([
+                                                            dbc.Label("Ventilation Calculation Method"),
+                                                            dcc.Dropdown(
+                                                                id="ventilation_calculation_method",
+                                                                options=[
+                                                                    {"label": "simple", "value": "simple"},
+                                                                    {"label": "NBN-D-50-001", "value": "NBN-D-50-001"},
+                                                                ],
+                                                                value="simple", clearable=False,
+                                                                className="dash-dropdown"
+                                                            ),
+                                                            html.Br(),
+                                                            dbc.Label("Ventilation System"),
+                                                            dcc.Dropdown(
+                                                                id="v_system",
+                                                                options=[{"label": k, "value": k} for k in ["C", "D"]],
+                                                                value="C", clearable=False,
+                                                                className="dash-dropdown"
+                                                            ),
+                                                            html.Br(),
+                                                            dbc.Label("Air Tightness (v50)"),
+                                                            dbc.Input(id="v50", type="number", min=0, max=12, value=6.0,
+                                                                      step=0.5),
+                                                            dbc.FormText("Air changes per hour at 50 Pa (1/h)"),
+                                                        ], title="💨 Ventilation Settings", item_id="ventilation"),
+                                                        dbc.AccordionItem([
+                                                            dbc.Label("Neighbour Temperature (°C)"),
+                                                            dbc.Input(id="neighbour_t", type="number", value=18.0,
+                                                                      step=0.5),
+                                                            html.Br(),
+                                                            dbc.Label("Neighbour Loss Coefficient (Un)"),
+                                                            dbc.Input(id="un", type="number", value=1.0, step=0.1),
+                                                            html.Br(),
+                                                            dbc.Label("Infiltration Rate (LIR)"),
+                                                            dbc.Input(id="lir", type="number", value=0.2, step=0.05),
+                                                            html.Br(),
+                                                            dbc.Label("Wall Height (m)"),
+                                                            dbc.Input(id="wall_height", type="number", value=2.7,
+                                                                      step=0.1),
+                                                            html.Br(),
+                                                        ], title="🔍 Advanced Settings", item_id="advanced"),
+                                                    ], start_collapsed=True, always_open=False, flush=True),
+                                                ])
+                                            ], className="mb-4", id="additional-settings-card"),
+                                        ], md=3),
+                                    ])
+                                ], className="input-section"),
+                                # --- Room Configuration (editable table) ---
+                                dbc.Card([
+                                    dbc.CardHeader("🛎️ Room Configuration"),
+                                    dbc.CardBody([
+                                        dash_table.DataTable(
+                                            id="room-table",
+                                            editable=True,
+                                            row_deletable=False,
+                                            columns=[
+                                                {"name": "Room #", "id": "Room #", "type": "numeric",
+                                                 "editable": False},
+                                                {"name": "Indoor Temp (°C)", "id": "Indoor Temp (°C)",
+                                                 "type": "numeric",
+                                                 "editable": True, "presentation": "input"},
+                                                {"name": "Floor Area (m²)", "id": "Floor Area (m²)", "type": "numeric"},
+                                                {"name": "Walls external", "id": "Walls external", "type": "numeric",
+                                                 "presentation": "dropdown"},
+                                                {"name": "Room Type", "id": "Room Type", "type": "text",
+                                                 "presentation": "dropdown"},
+                                                {"name": "On Ground", "id": "On Ground", "type": "any",
+                                                 "presentation": "dropdown"},
+                                                {"name": "Under Roof", "id": "Under Roof", "type": "any",
+                                                 "presentation": "dropdown"},
+                                            ],
+                                            dropdown={
+                                                "Room Type": {"options": [{"label": str(v), "value": v} for v in
+                                                                          ROOM_TYPE_OPTIONS]},
+                                                "On Ground": {"options": [{"label": "No", "value": False},
+                                                                          {"label": "Yes", "value": True}]},
+                                                "Under Roof": {"options": [{"label": "No", "value": False},
+                                                                           {"label": "Yes", "value": True}]},
+                                                "Walls external": {
+                                                    "options": [{"label": str(v), "value": v} for v in [1, 2, 3, 4]]},
+                                            },
+                                            tooltip_header={
+                                                "Room Type": ROOM_TYPE_HELP_MD,
+                                                "On Ground": "Space on ground slab / exposed to ground.",
+                                                "Under Roof": "Space directly under roof.",
+                                                "Walls external": "Number of external walls (1-4).",
+                                                "Indoor Temp (°C)": "Set between 10°C and 24°C.",
+                                            },
+                                            data=default_room_table(3),
+                                            page_size=10,
+                                            style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold',
+                                                          'textAlign': 'center'},
+                                            style_cell={'padding': '8px', 'textAlign': 'left',
+                                                        'border': '1px solid #dee2e6'},
+                                            style_data_conditional=[
+                                                                       {'if': {'column_id': c},
+                                                                        'backgroundColor': '#fffef0'}
+                                                                       for c in ["Indoor Temp (°C)", "Floor Area (m²)",
+                                                                                 "Walls external", "Room Type",
+                                                                                 "On Ground", "Under Roof"]
+                                                                   ] + [{'if': {'row_index': 'odd'},
+                                                                         'backgroundColor': 'rgb(248, 248, 248)'}],
+                                            tooltip_delay=200, tooltip_duration=None
+                                        ),
+                                        html.Div([
+                                            html.Small(
+                                                "Tip: Double-click cells to edit. For 'Walls external', choose 1-4. For 'Indoor Temp', use 10–24°C.",
+                                                className="text-muted"),
+                                        ], className="mt-2"),
+                                    ])
+                                ], className="mb-4", id="room-config-card"),
 
-                                                        dbc.Label("Ground U-value (W/m²K)"),
-                                                        dbc.Input(id="u_ground", type="number", value=0.3, step=0.05),
-                                                        dbc.FormText("Slab-on-grade U-value"),
-                                                        html.Br(),
+                                # --- Manual input card (only when mode='known') ---
+                                dbc.Card([
+                                    dbc.CardHeader("✍️ Manual Room Heat Loss (visible when 'known' is selected)"),
+                                    dbc.CardBody([
+                                        dash_table.DataTable(
+                                            id="manual-loss-table",
+                                            editable=True,
+                                            row_deletable=False,
+                                            columns=[
+                                                {"name": "Room #", "id": "Room #", "type": "numeric",
+                                                 "editable": False},
+                                                {"name": "Manual Heat Loss (W)", "id": "Manual Heat Loss (W)",
+                                                 "type": "numeric"},
+                                            ],
+                                            data=[{"Room #": i, "Manual Heat Loss (W)": 0.0} for i in range(1, 4)],
+                                            page_size=10,
+                                            style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold',
+                                                          'textAlign': 'center'},
+                                            style_cell={'padding': '8px', 'border': '1px solid #dee2e6'},
+                                            style_data_conditional=[
+                                                {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(248, 248, 248)'},
+                                                {'if': {'column_id': 'Manual Heat Loss (W)'},
+                                                 'backgroundColor': '#fffef0'},
+                                            ],
+                                            tooltip_header={
+                                                "Manual Heat Loss (W)": "Enter the design heat loss for each room (W).",
+                                            },
+                                            tooltip_delay=200, tooltip_duration=None
+                                        ),
+                                        html.Small(
+                                            "When this table is visible, Tab 2 & 3 will use these values instead of the calculated ones.",
+                                            className="text-muted"),
+                                    ])
+                                ], id="manual-loss-card", style={"display": "none"}, className="mb-4"),
 
-                                                        dbc.Label("Glazing U-value (W/m²K)"),
-                                                        dbc.Input(id="u_glass", type="number", value=0.2, step=0.05),
-                                                        dbc.FormText("Window glazing U-value"),
-                                                    ])
-                                                ], className="mb-4"),
-                                            ], md=4),
-                                            dbc.Col([
-                                                dbc.Card([
-                                                    dbc.CardHeader("🌡️ Outdoor Conditions"),
-                                                    dbc.CardBody([
-                                                        dbc.Label("Outdoor Temperature (°C)"),
-                                                        dbc.Input(id="tout", type="number", value=-7.0, step=0.5),
-                                                        dbc.FormText("Design outdoor winter temperature"),
-                                                    ])
-                                                ], className="mb-4"),
-                                                dbc.Card([
-                                                    dbc.CardHeader("Number of Rooms"),
-                                                    dbc.CardBody([
-                                                        dbc.Label("Number of Rooms"),
-                                                        dbc.Input(id="num_rooms", type="number", min=1, value=3, step=1,
-                                                                  style={"maxWidth": "160px"}),
-                                                        dbc.FormText("Add rooms first then details."),
-                                                    ])
-                                                ], className="mb-4"),
-                                            ], md=4),
-                                            dbc.Col([
-                                                dbc.Card([
-                                                    dbc.CardHeader("⚙️ Additional Settings"),
-                                                    dbc.CardBody([
-                                                        dbc.Accordion([
-                                                            dbc.AccordionItem([
-                                                                dbc.Label("Ventilation Calculation Method"),
-                                                                dcc.Dropdown(
-                                                                    id="ventilation_calculation_method",
-                                                                    options=[
-                                                                        {"label": "simple", "value": "simple"},
-                                                                        {"label": "NBN-D-50-001",
-                                                                         "value": "NBN-D-50-001"},
-                                                                    ],
-                                                                    value="simple", clearable=False,
-                                                                    className="dash-dropdown"
-                                                                ),
-                                                                html.Br(),
-                                                                dbc.Label("Ventilation System"),
-                                                                dcc.Dropdown(
-                                                                    id="v_system",
-                                                                    options=[{"label": k, "value": k} for k in
-                                                                             ["C", "D"]],
-                                                                    value="C", clearable=False,
-                                                                    className="dash-dropdown"
-                                                                ),
-                                                                html.Br(),
-                                                                dbc.Label("Air Tightness (v50)"),
-                                                                dbc.Input(id="v50", type="number", min=0, value=6.0,
-                                                                          step=0.5),
-                                                                dbc.FormText("Air changes per hour at 50 Pa (1/h)"),
-                                                            ], title="💨 Ventilation Settings", item_id="ventilation"),
-
-                                                            dbc.AccordionItem([
-                                                                dbc.Label("Neighbour Temperature (°C)"),
-                                                                dbc.Input(id="neighbour_t", type="number", value=18.0,
-                                                                          step=0.5),
-                                                                html.Br(),
-                                                                dbc.Label("Neighbour Loss Coefficient (un)"),
-                                                                dbc.Input(id="un", type="number", value=1.0, step=0.1),
-                                                                html.Br(),
-                                                                dbc.Label("Infiltration Rate (lir)"),
-                                                                dbc.Input(id="lir", type="number", value=0.2,
-                                                                          step=0.05),
-                                                                html.Br(),
-                                                                dbc.Label("Wall Height (m)"),
-                                                                dbc.Input(id="wall_height", type="number", value=2.7,
-                                                                          step=0.1),
-                                                                html.Br(),
-                                                                dbc.Checklist(
-                                                                    id="return_detail",
-                                                                    options=[{"label": " Return Detailed Results",
-                                                                              "value": "yes"}],
-                                                                    value=[], inline=True
-                                                                ),
-                                                                dbc.Checklist(
-                                                                    id="add_neighbour_losses",
-                                                                    options=[
-                                                                        {"label": " Add Neighbour Losses",
-                                                                         "value": "yes"}],
-                                                                    value=[], inline=True
-                                                                ),
-                                                            ], title="🔍 Advanced Settings", item_id="advanced"),
-                                                        ], start_collapsed=True, always_open=False, flush=True),
-                                                    ])
-                                                ], className="mb-4"),
-                                            ], md=4),
-                                        ])
-                                    ], className="input-section"),
-
-                                    dbc.Card([
-                                        dbc.CardHeader("🛋️ Room Configuration"),
-                                        dbc.CardBody([
-                                            dash_table.DataTable(
-                                                id="room-table",
-                                                editable=True,
-                                                row_deletable=False,
-                                                columns=[
-                                                    {"name": "Room #", "id": "Room #", "type": "numeric",
-                                                     "editable": False},
-                                                    {"name": "Indoor Temp (°C)", "id": "Indoor Temp (°C)",
-                                                     "type": "numeric", "editable": True, "presentation": "input"},
-                                                    {"name": "Floor Area (m²)", "id": "Floor Area (m²)",
-                                                     "type": "numeric"},
-                                                    {"name": "Walls external", "id": "Walls external",
-                                                     "type": "numeric", "presentation": "dropdown"},
-                                                    {"name": "Room Type", "id": "Room Type", "type": "text",
-                                                     "presentation": "dropdown"},
-                                                    {"name": "On Ground", "id": "On Ground", "type": "any",
-                                                     "presentation": "dropdown"},
-                                                    {"name": "Under Roof", "id": "Under Roof", "type": "any",
-                                                     "presentation": "dropdown"},
-                                                ],
-                                                dropdown={
-                                                    "Room Type": {"options": [{"label": str(v), "value": v} for v in
-                                                                              ROOM_TYPE_OPTIONS]},
-                                                    "On Ground": {"options": [{"label": "No", "value": False},
-                                                                              {"label": "Yes", "value": True}]},
-                                                    "Under Roof": {"options": [{"label": "No", "value": False},
-                                                                               {"label": "Yes", "value": True}]},
-                                                    "Walls external": {
-                                                        "options": [{"label": str(v), "value": v} for v in
-                                                                    [1, 2, 3, 4]]},
-                                                },
-                                                tooltip_header={
-                                                    "Room Type": ROOM_TYPE_HELP_MD,
-                                                    "On Ground": "Space on ground slab / exposed to ground.",
-                                                    "Under Roof": "Space directly under roof.",
-                                                    "Walls external": "Number of external walls (1-4).",
-                                                    "Indoor Temp (°C)": "Set between 10°C and 24°C.",
-                                                },
-                                                data=default_room_table(3),
-                                                page_size=10,
-                                                style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold',
-                                                              'textAlign': 'center'},
-                                                style_cell={'padding': '8px', 'textAlign': 'left',
-                                                            'border': '1px solid #dee2e6'},
-                                                style_data_conditional=[
-                                                                           {'if': {'column_id': c},
-                                                                            'backgroundColor': '#fffef0'}
-                                                                           for c in
-                                                                           ["Indoor Temp (°C)", "Floor Area (m²)",
-                                                                            "Walls external", "Room Type", "On Ground",
-                                                                            "Under Roof"]
-                                                                       ] + [{'if': {'row_index': 'odd'},
-                                                                             'backgroundColor': 'rgb(248, 248, 248)'}],
-                                                tooltip_delay=200, tooltip_duration=None
-                                            ),
-
-                                            html.Div([
-                                                html.Small(
-                                                    "Tip: Double-click cells to edit. For 'Walls external', choose 1-4. For 'Indoor Temp', use 10-24°C.",
-                                                    className="text-muted"),
-                                            ], className="mt-2"),
-                                        ])
-                                    ], className="mb-4"),
-
-                                    dbc.Card([
-                                        dbc.CardHeader("📊 Room Heat Loss Results"),
-                                        dbc.CardBody([
-                                            html.Div(id="room-results-table")
-                                        ])
-                                    ], className="mb-4", style={
-                                        "backgroundColor": "#f0f4ff",  # light blue background
-                                        "border": "1px solid #cce",  # subtle border
-                                        "boxShadow": "0 0 6px rgba(0,0,0,0.1)"  # soft shadow
-                                    })
-                                ])
+                                # --- Results card ---
+                                dbc.Card([
+                                    dbc.CardHeader("📊 Room Heat Loss Results"),
+                                    dbc.CardBody([
+                                        html.Div(id="room-results-table")
+                                    ])
+                                ], className="mb-4", style={
+                                    "backgroundColor": "#f0f4ff",  # light blue background
+                                    "border": "1px solid #cce",  # subtle border
+                                    "boxShadow": "0 0 6px rgba(0,0,0,0.1)"  # soft shadow
+                                }),
                             ], className="mb-4"),
                         ]),
 
-                        # ------------- TAB 2 -------------
+                        # --- TAB 2 (Radiators & Collectors) ---
                         dbc.Tab(label="2️⃣ Radiators & Collectors", tab_id="tab-2", className="justify-content-center",
                                 children=[
                                     dbc.Card([
@@ -541,7 +701,7 @@ main_layout = dbc.Container(
                                             dbc.Row([
                                                 dbc.Col([
                                                     dbc.Card([
-                                                        dbc.CardHeader("🔧 System Configuration"),
+                                                        dbc.CardHeader("🛧 System Configuration"),
                                                         dbc.CardBody([
                                                             dbc.Label("Number of radiators"),
                                                             dbc.Input(id="num_radiators", type="number", min=1, value=3,
@@ -549,30 +709,22 @@ main_layout = dbc.Container(
                                                             html.Br(),
                                                             dbc.Label("Number of collectors"),
                                                             dbc.Input(id="num_collectors", type="number", min=1,
-                                                                      value=1,
-                                                                      step=1),
-                                                            html.Br(),
-                                                            dbc.Label("Valve positions (n)"),
-                                                            dbc.Input(id="positions", type="number", min=1, value=8,
-                                                                      step=1),
-                                                            html.Br(),
-                                                            dbc.Label("Valve kv max"),
-                                                            dbc.Input(id="kv_max", type="number", min=0.0, value=0.7,
-                                                                      step=0.01),
+                                                                      value=1, step=1),
                                                             html.Br(),
                                                             dbc.Label("Delta T (°C)"),
-                                                            dcc.Slider(id="delta_T", min=3, max=20, step=1, value=5,
-                                                                       marks={i: str(i) for i in range(3, 21)}),
+                                                            dbc.Input(id="delta_T", type="number", min=3, max=20,
+                                                                      step=1, value=5),
                                                             html.Br(),
-                                                            dbc.Label("Supply temperature (°C, empty = auto)"),
+                                                            html.Div("Optional Inputs",
+                                                                     className="form-label fw-bold mt-3"),
+                                                            dbc.Label("Supply temperature (°C)"),
                                                             dbc.Input(id="supply_temp_input", type="number",
                                                                       placeholder="(optional)"),
                                                             html.Br(),
                                                             dbc.Checklist(
                                                                 id="fix_diameter",
-                                                                options=[
-                                                                    {"label": " Fix same diameter for all radiators",
-                                                                     "value": "yes"}],
+                                                                options=[{"label": " Fix diameter for all radiators",
+                                                                          "value": "yes"}],
                                                                 value=[]
                                                             ),
                                                             html.Div([
@@ -580,14 +732,59 @@ main_layout = dbc.Container(
                                                                 dcc.Dropdown(
                                                                     id="fixed_diameter",
                                                                     options=[{"label": str(mm), "value": mm} for mm in
-                                                                             [12, 14, 16, 18, 20]],
+                                                                             [12, 14, 16, 18, 20, 22, 25, 28, 36]],
                                                                     value=16, clearable=False
                                                                 ),
                                                             ], id="fixed_diameter_container"),
                                                         ])
                                                     ], className="mb-4"),
-                                                ], md=4),
-
+                                                ], md=2),
+                                                dbc.Col([
+                                                    dbc.Card([
+                                                        dbc.CardHeader("🔧 Valve Settings"),
+                                                        dbc.CardBody([
+                                                            dbc.Label("Valve Type"),
+                                                            dcc.Dropdown(
+                                                                id="valve-type-dropdown",
+                                                                options=[
+                                                                    {"label": "Custom", "value": "Custom"},
+                                                                    {"label": "Danfoss RA-N 10 (3/8)",
+                                                                     "value": "Danfoss RA-N 10 (3/8)"},
+                                                                    {"label": "Danfoss RA-N 15 (1/2)",
+                                                                     "value": "Danfoss RA-N 15 (1/2)"},
+                                                                    {"label": "Danfoss RA-N 20 (3/4)",
+                                                                     "value": "Danfoss RA-N 20 (3/4)"},
+                                                                    {"label": "Oventrop DN15 (1/2)",
+                                                                     "value": "Oventrop DN15 (1/2)"},
+                                                                    {"label": "Heimeier (1/2)",
+                                                                     "value": "Heimeier (1/2)"},
+                                                                    {"label": "Vogel und Noot",
+                                                                     "value": "Vogel und Noot"},
+                                                                    {"label": "Comap", "value": "Comap"},
+                                                                ],
+                                                                value="Custom",
+                                                                clearable=False,
+                                                                className="mb-3"
+                                                            ),
+                                                            html.Div(id="valve-specs",
+                                                                     className="small text-muted mb-3"),
+                                                            html.Div(id="valve-custom-settings", children=[
+                                                                dbc.Row([
+                                                                    dbc.Col([
+                                                                        dbc.Label("Positions"),
+                                                                        dbc.Input(id="positions", type="number", min=2,
+                                                                                  value=8, step=1, className="mb-3")
+                                                                    ]),
+                                                                    dbc.Col([
+                                                                        dbc.Label("Kv max"),
+                                                                        dbc.Input(id="kv_max", type="number", min=0.1,
+                                                                                  value=0.7, step=0.1)
+                                                                    ])
+                                                                ])
+                                                            ])
+                                                        ])
+                                                    ], className="mb-4"),
+                                                ], md=2),
                                                 dbc.Col([
                                                     dbc.Card([
                                                         dbc.CardHeader("🌡️ Radiator Inputs"),
@@ -597,8 +794,7 @@ main_layout = dbc.Container(
                                                                 editable=True, row_deletable=False,
                                                                 columns=[
                                                                     {"name": "Radiator", "id": "Radiator nr",
-                                                                     "type": "numeric",
-                                                                     "editable": False},
+                                                                     "type": "numeric", "editable": False},
                                                                     {"name": "Room", "id": "Room",
                                                                      "presentation": "dropdown"},
                                                                     {"name": "Collector", "id": "Collector",
@@ -637,9 +833,8 @@ main_layout = dbc.Container(
                                                             )
                                                         ])
                                                     ], className="mb-4"),
-
                                                     dbc.Card([
-                                                        dbc.CardHeader("🧮 Collectors"),
+                                                        dbc.CardHeader("🧠 Collectors"),
                                                         dbc.CardBody([
                                                             dash_table.DataTable(
                                                                 id="collector-table",
@@ -666,9 +861,8 @@ main_layout = dbc.Container(
                                                     ], className="mb-4"),
                                                 ], md=8),
                                             ]),
-
                                             dbc.Card([
-                                                dbc.CardHeader("📊 Room Heat Loss Results"),
+                                                dbc.CardHeader("📊 Radiator/Room Heat Loss Results"),
                                                 dbc.CardBody([
                                                     dash_table.DataTable(
                                                         id="heat-loss-split-table",
@@ -682,20 +876,19 @@ main_layout = dbc.Container(
                                                         data=[], page_size=10,
                                                         style_cell={'padding': '8px', 'border': '1px solid #dee2e6'},
                                                         style_header={'backgroundColor': '#f8f9fa',
-                                                                      'fontWeight': 'bold',
-                                                                      'textAlign': 'center'}
+                                                                      'fontWeight': 'bold', 'textAlign': 'center'}
                                                     )
                                                 ])
                                             ], style={
-                                                "backgroundColor": "#f0f4ff",  # light blue background
-                                                "border": "1px solid #cce",  # subtle border
-                                                "boxShadow": "0 0 6px rgba(0,0,0,0.1)"  # soft shadow
+                                                "backgroundColor": "#f0f4ff",
+                                                "border": "1px solid #cce",
+                                                "boxShadow": "0 0 6px rgba(0,0,0,0.1)"
                                             }, className="mb-4"),
                                         ])
                                     ])
                                 ]),
 
-                        # ------------- TAB 3 -------------
+                        # --- TAB 3 (Results) ---
                         dbc.Tab(label="3️⃣ Results", tab_id="tab-3", className="justify-content-center", children=[
                             dbc.Card([
                                 dbc.CardBody([
@@ -767,7 +960,6 @@ main_layout = dbc.Container(
                                             ], className="shadow-sm border-0 h-100"),
                                         ], md=3, className="mb-3"),
                                     ], className="mb-4"),
-
                                     html.Hr(),
                                     html.H5("System Performance"),
                                     # First row of charts
@@ -834,14 +1026,11 @@ main_layout = dbc.Container(
                                             ], className="shadow-sm border-0"),
                                         ], md=12, className="mb-3"),
                                     ], className="g-3"),
-
                                     html.Hr(),
                                     html.H5("Summary"),
                                     html.Div(id="summary-metrics", className="alert alert-info"),
-
                                     html.Hr(),
                                     html.H5("Detailed Results"),
-
                                     html.H6("Radiators", className="mt-4 mb-3"),
                                     dash_table.DataTable(
                                         id="merged-results-table",
@@ -854,7 +1043,6 @@ main_layout = dbc.Container(
                                         style_data_conditional=[
                                             {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(248, 248, 248)'}]
                                     ),
-
                                     html.H6("Collectors", className="mt-4 mb-3"),
                                     dash_table.DataTable(
                                         id="collector-results-table",
@@ -871,18 +1059,17 @@ main_layout = dbc.Container(
                             ])
                         ]),
                     ],
-                )
+                ),
             ], width=12)
         ], className="mt-4"),
-
         dbc.Row([
             dbc.Col([
                 html.Hr(),
                 html.Footer(
                     html.Div([
-                        html.Small("© 2025 — Smart Heating Design Tool"),
+                        html.Small("© 2025 — RESHEDO"),
                         html.Span(" · "),
-                        html.Small("Built with Dash & Bootstrap"),
+                        html.Small("Buildwise v1.0.0"),
                     ], className="text-muted")
                 )
             ], width=12)
@@ -894,60 +1081,108 @@ main_layout = dbc.Container(
 
 help_layout = dbc.Container([
     navbar,
-    html.H2("Help & Documentation", className="text-center mt-4"),
+    html.H2("Help & Documentatie", className="text-center mt-4"),
     html.Hr(),
-
-    html.H4("Overview"),
+    html.H4("Overzicht"),
     html.P(
-        "The Smart Heating Design Tool helps you estimate heat loss, configure radiators and collectors, and analyze system performance for heat pump systems in renovation cases. "
-        "This tool is part of the Recover project, funded by the Flemish Government, which aims to accelerate the energy transition in residential buildings by supporting the design of efficient and sustainable heating systems."
+        "De Smart Heating Design Tool helpt je om warmteverliezen te schatten, radiatoren en collectoren te configureren, en de systeemprestaties van warmtepompsystemen bij renovaties te analyseren. "
+        "Deze tool maakt deel uit van het Recover-project, gefinancierd door de Vlaamse overheid, dat tot doel heeft de energietransitie in residentiële gebouwen te versnellen door het ontwerp van efficiënte en duurzame verwarmingssystemen te ondersteunen."
     ),
-
-    html.H4("About the Recover Project"),
+    html.H4("Over het Recover Project"),
     html.P(
-        "Recover is a research and innovation initiative focused on optimizing the renovation of existing buildings with sustainable heating solutions. "
-        "It brings together stakeholders from industry, academia, and government to develop tools and methodologies that support the deployment of low-temperature heating systems, such as heat pumps, in the Flemish building stock."
+        "Recover is een onderzoeks- en innovatie-initiatief dat zich richt op het optimaliseren van de renovatie van bestaande gebouwen met duurzame verwarmingsoplossingen. "
+        "Het brengt belanghebbenden uit de industrie, de academische wereld en de overheid samen om tools en methodologieën te ontwikkelen die de implementatie van lage-temperatuur verwarmingssystemen, zoals warmtepompen, in het Vlaamse gebouwenbestand ondersteunen."
     ),
-
-    html.H4("How to Use"),
+    html.H4("Hoe te gebruiken"),
     html.Ul([
         html.Li(
-            "Start with the 'Heat Loss' tab to input building parameters such as insulation levels, surface areas, and outdoor temperature."),
-        html.Li("Configure rooms and ventilation settings to reflect the actual building layout."),
+            "Begin met het tabblad 'Warmteverlies' om gebouwparameters in te voeren, zoals isolatieniveaus, oppervlakken en buitentemperatuur."),
+        html.Li("Configureer kamers en ventilatie-instellingen om de werkelijke gebouwindeling weer te geven."),
         html.Li(
-            "Use the 'Radiators & Collectors' tab to size components based on calculated heat loads and desired temperature regimes."),
+            "Gebruik het tabblad 'Radiatoren & Collectoren' om componenten te dimensioneren op basis van berekende warmtelasten en gewenste temperatuursregimes."),
         html.Li(
-            "View results and charts in the 'Results' tab to evaluate system performance and identify potential improvements."),
+            "Bekijk resultaten en grafieken in het tabblad 'Resultaten' om systeemprestaties te evalueren en mogelijke verbeteringen te identificeren."),
     ]),
-
-    html.H4("Combined Heat Load and Radiator Calculator"),
+    html.H4("Gecombineerde Warmtelast- en Radiatorcalculator"),
     html.P(
-        "This calculator integrates heat loss estimation with radiator and collector sizing to streamline the design process. "
-        "It supports iterative design by allowing users to adjust parameters and immediately see the impact on system sizing and performance. "
-        "The tool is especially useful in renovation scenarios where existing constraints (e.g., radiator dimensions, insulation levels) must be considered."
+        "Deze calculator combineert warmteverliesberekening met de dimensionering van radiatoren en collectoren om het ontwerpproces te stroomlijnen. "
+        "Het ondersteunt iteratief ontwerp door gebruikers in staat te stellen parameters aan te passen en onmiddellijk de impact op systeemdimensionering en prestaties te zien. "
+        "De tool is vooral nuttig bij renovatiescenario's waarbij bestaande beperkingen (bijvoorbeeld radiatorafmetingen, isolatieniveaus) in aanmerking moeten worden genomen."
     ),
-
-    html.H4("Resources"),
+    html.H4("Hulpmiddelen"),
     html.Ul([
         html.Li(dcc.Link("HeatLoad EPB Tool", href="https://tool.smartgeotherm.be/verw/ruimte", target="_blank")),
-        html.Li(dcc.Link("SmartHeating Project Overview", href="https://smartheating.be", target="_blank")),
+        html.Li(dcc.Link("SmartHeating Project Overzicht", href="https://smartheating.be", target="_blank")),
     ]),
-
     html.H4("Contact"),
-    html.P(
-        "For technical questions, reach out to Bart Merema or Jeroen Van der Veken.")
+    html.P("Voor technische vragen kan je contact opnemen met Bart Merema of Jeroen Van der Veken.")
 ], className="mb-4")
 
 
-# -------------------------
-# Callbacks - Tab 1
-# -------------------------
+# --------------------------
+# Callbacks - pages
+# --------------------------
 @app.callback(Output("page-content", "children"), Input("url", "pathname"))
 def display_page(pathname):
     if pathname == "/help":
         return help_layout
     else:
         return main_layout
+
+
+# --------------------------
+# Callbacks - Tab 0 (Start)
+# --------------------------
+@app.callback(
+    Output("heat-load-mode-store", "data"),
+    Output("tabs", "active_tab"),
+    Input("heat-load-mode", "value"),
+)
+def choose_mode_and_go(mode):
+    if mode in ("known", "unknown"):
+        return mode, "tab-1"
+    return no_update, no_update
+
+
+# --------------------------
+# Callbacks - Tab 1 (Room table)
+# --------------------------
+
+@app.callback(
+    [
+        Output("uw", "value"),
+        Output("u_roof", "value"),
+        Output("u_ground", "value"),
+        Output("u_glass", "value"),
+    ],
+    [
+        Input("wall_insulation_state", "value"),
+        Input("roof_insulation_state", "value"),
+        Input("ground_insulation_state", "value"),
+        Input("glazing_type", "value"),
+    ],
+    [
+        State("uw", "value"),
+        State("u_roof", "value"),
+        State("u_ground", "value"),
+        State("u_glass", "value"),
+    ]
+)
+def set_default_u_values(
+        wall_state, roof_state, ground_state, glazing_type,
+        uw, u_roof, u_ground, u_glass
+):
+    triggered = [t["prop_id"] for t in callback_context.triggered]
+    # Only update the U-value for the changed dropdown
+    if "wall_insulation_state.value" in triggered:
+        uw = INSULATION_U_VALUES[wall_state]["wall"]
+    if "roof_insulation_state.value" in triggered:
+        u_roof = INSULATION_U_VALUES[roof_state]["roof"]
+    if "ground_insulation_state.value" in triggered:
+        u_ground = INSULATION_U_VALUES[ground_state]["ground"]
+    if "glazing_type.value" in triggered:
+        u_glass = GLAZING_U_VALUES[glazing_type]
+    return uw, u_roof, u_ground, u_glass
 
 
 @app.callback(
@@ -962,7 +1197,6 @@ def build_room_table(num_rooms):
         num_rooms = int(num_rooms) if (num_rooms and int(num_rooms) > 0) else 1
     except Exception:
         num_rooms = 1
-
     columns = [
         {"name": "Room #", "id": "Room #", "type": "numeric"},
         {"name": "Indoor Temp (°C)", "id": "Indoor Temp (°C)", "type": "numeric", "editable": True,
@@ -983,6 +1217,63 @@ def build_room_table(num_rooms):
     return columns, data, dropdown
 
 
+# NEW: toggle manual card and banner text on Tab 1
+@app.callback(
+    Output("manual-loss-card", "style"),
+    Output("heat-load-mode-banner", "children"),
+    Input("heat-load-mode-store", "data"),
+)
+def toggle_manual_ui(mode):
+    if mode == "known":
+        return {"display": "block"}, "Mode: 🔒 Heat load is KNOWN — enter per-room heat losses below."
+    return {"display": "none"}, "Mode: 🧮 Heat load is UNKNOWN — the tool will calculate room heat losses."
+
+
+# NEW: HIDE/SHOW Envelope, Outdoor, Additional, Room Config when 'known'
+@app.callback(
+    Output("building-envelope-card", "style"),
+    Output("outdoor-conditions-card", "style"),
+    Output("building-insulation-card", "style"),
+    Output("additional-settings-card", "style"),
+    Output("room-config-card", "style"),
+    Input("heat-load-mode-store", "data"),
+)
+def toggle_known_mode_visibility(mode):
+    hidden = {"display": "none"}
+    shown = {"display": "block"}
+    if mode == "known":
+        return hidden, hidden, hidden, hidden, hidden
+    return shown, shown, shown, shown, shown
+
+
+# NEW: build/resize manual table when number of rooms changes
+@app.callback(
+    Output("manual-loss-table", "data"),
+    Input("num_rooms", "value"),
+    State("manual-loss-table", "data"),
+    prevent_initial_call=False
+)
+def build_manual_loss_table(num_rooms, current):
+    try:
+        n = int(num_rooms) if (num_rooms and int(num_rooms) > 0) else 1
+    except Exception:
+        n = 1
+    rows = (current or []).copy()
+    by_room = {r.get("Room #"): r for r in rows if "Room #" in r}
+    new_rows = []
+    for i in range(1, n + 1):
+        if i in by_room:
+            r = by_room[i]
+            r["Room #"] = i
+            if "Manual Heat Loss (W)" not in r or r["Manual Heat Loss (W)"] is None:
+                r["Manual Heat Loss (W)"] = 0.0
+            new_rows.append(r)
+        else:
+            new_rows.append({"Room #": i, "Manual Heat Loss (W)": 0.0})
+    return new_rows
+
+
+# MODIFIED: compute (calculated vs manual) and render results table
 @app.callback(
     Output("room-results-store", "data"),
     Output("room-results-table", "children"),
@@ -994,13 +1285,40 @@ def build_room_table(num_rooms):
     Input("v50", "value"),
     Input("neighbour_t", "value"), Input("un", "value"), Input("lir", "value"),
     Input("wall_height", "value"),
-    Input("return_detail", "value"),
-    Input("add_neighbour_losses", "value"),
+    # Input("return_detail", "value"),
+    # Input("add_neighbour_losses", "value"),
+    # NEW Inputs:
+    Input("heat-load-mode-store", "data"),
+    Input("manual-loss-table", "data"),
 )
 def compute_rooms_and_table(
         room_rows, uw, u_roof, u_ground, u_glass, tout,
-        vcalc, vsys, v50, neighbour_t, un, lir, wall_height, return_detail, add_neighbour_losses
+        vcalc, vsys, v50, neighbour_t, un, lir, wall_height,
+        mode, manual_rows
 ):
+    # --- Manual mode: publish manual results, skip calculation ---
+    if mode == "known":
+        df_manual = pd.DataFrame(manual_rows or [])
+        if not df_manual.empty:
+            df_manual = df_manual.copy()
+            df_manual["Room"] = pd.to_numeric(df_manual.get("Room #", 0), errors="coerce").fillna(0).astype(int)
+            df_manual["Total Heat Loss (W)"] = pd.to_numeric(df_manual.get("Manual Heat Loss (W)", 0.0),
+                                                             errors="coerce").fillna(0.0)
+            df_manual = df_manual[["Room", "Total Heat Loss (W)"]]
+        else:
+            df_manual = pd.DataFrame(columns=["Room", "Total Heat Loss (W)"])
+        records = df_manual.to_dict("records")
+        table = dash_table.DataTable(
+            columns=[{"name": c, "id": c} for c in df_manual.columns],
+            data=records,
+            page_size=10,
+            style_table={"overflowX": "auto"},
+            style_cell={'padding': '8px', 'border': '1px solid #dee2e6'},
+            style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold', 'textAlign': 'center'},
+        )
+        return records, table
+
+    # --- Calculated mode (existing logic) ---
     # Enforce limits for "Walls external" and "Indoor Temp (°C)"
     for row in (room_rows or []):
         # Clamp indoor temp
@@ -1037,10 +1355,9 @@ def compute_rooms_and_table(
         un=safe_to_float(un, 1.0) or 1.0,
         lir=safe_to_float(lir, 0.2) or 0.2,
         wall_height=safe_to_float(wall_height, 2.7) or 2.7,
-        return_detail=("yes" in (return_detail or [])),
-        add_neighbour_losses=("yes" in (add_neighbour_losses or [])),
+        return_detail=False,
+        add_neighbour_losses=True,
     )
-
     records = df_results.to_dict("records")
     table = dash_table.DataTable(
         columns=[{"name": c, "id": c} for c in df_results.columns],
@@ -1053,10 +1370,9 @@ def compute_rooms_and_table(
     return records, table
 
 
-# -------------------------
-# Callbacks - Tab 2
-# -------------------------
-
+# --------------------------
+# Callbacks - Tab 2 (Radiators & Collectors)
+# --------------------------
 @app.callback(
     Output("fixed_diameter_container", "style"),
     Input("fix_diameter", "value")
@@ -1131,7 +1447,6 @@ def ensure_tables_and_dropdowns(cfg, room_results_records, radiator_store, colle
         "Room": {"options": [{"label": str(o), "value": o} for o in room_options]},
         "Collector": {"options": [{"label": c, "value": c} for c in collector_options]}
     }
-
     return current_rows, current_collectors, current_rows, dropdown, current_collectors
 
 
@@ -1166,10 +1481,9 @@ def recompute_heat_loss_split(radiator_rows, room_results_records):
     return split_df.to_dict("records"), split_df.to_dict("records")
 
 
-# -------------------------
+# --------------------------
 # Callbacks - Tab 3 (calculations & charts)
-# -------------------------
-
+# --------------------------
 @app.callback(
     Output("results-warnings", "children"),
     Output("merged-results-table", "columns"),
@@ -1220,9 +1534,8 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         if "Room #" in room_temp_df.columns and "Indoor Temp (°C)" in room_temp_df.columns:
             room_temp_df = room_temp_df[["Room #", "Indoor Temp (°C)"]].rename(columns={"Room #": "Room"})
             rad_df = rad_df.merge(room_temp_df, on="Room", how="left")
-            # Use Indoor Temp as Space Temperature, fallback to existing Space Temperature or 20.0
-            rad_df["Space Temperature"] = rad_df["Indoor Temp (°C)"].fillna(
-                rad_df.get("Space Temperature", 20.0)).fillna(20.0)
+    # Use Indoor Temp as Space Temperature, fallback to existing Space Temperature or 20.0
+    rad_df["Space Temperature"] = rad_df["Indoor Temp (°C)"].fillna(rad_df.get("Space Temperature", 20.0)).fillna(20.0)
 
     numeric_cols = ["Radiator power 75/65/20", "Calculated heat loss", "Length circuit", "Space Temperature",
                     "Electric power"]
@@ -1238,7 +1551,6 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
             extra = row.get("Electric power", 0.0) or 0.0
             want = max(heat_loss - extra, 0.0)
             q_ratio = (want / base) if base else 0.0
-
             radiator = Radiator(
                 q_ratio=q_ratio,
                 delta_t=int(cfg.get("delta_T", 5)),
@@ -1248,7 +1560,6 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
             calc_rows.append(radiator)
 
         max_supply_temperature = determine_system_supply_temperature(calc_rows, cfg)
-
         for r in calc_rows:
             r.supply_temperature = max_supply_temperature
             r.return_temperature = r.calculate_treturn(max_supply_temperature)
@@ -1263,6 +1574,7 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         else:
             rad_df["Diameter"] = [r.calculate_diameter(POSSIBLE_DIAMETERS) for r in calc_rows]
         rad_df['Diameter'] = rad_df['Diameter'].max()
+
         rad_df["Pressure loss"] = [
             Circuit(length_circuit=row.get("Length circuit", 0.0) or 0.0,
                     diameter=row.get("Diameter", 16) or 16,
@@ -1274,7 +1586,6 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         collectors = [Collector(name=name) for name in collector_options]
         for c in collectors:
             c.update_mass_flow_rate(rad_df)
-
         col_df["Mass flow rate"] = [c.mass_flow_rate for c in collectors]
         col_df["Diameter"] = [c.calculate_diameter(POSSIBLE_DIAMETERS) for c in collectors]
         col_df["Collector pressure loss"] = [
@@ -1285,11 +1596,40 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         ]
 
         merged_df = Collector(name="").calculate_total_pressure_loss(rad_df, col_df)
-        valve = Valve(kv_max=float(cfg.get("kv_max", 0.7) or 0.7), n=int(cfg.get("positions", 8) or 8))
+        # Get valve configuration from config store or use defaults
+        valve_type = cfg.get("valve_type", "Custom")
+
+        if valve_type == "Custom":
+            # Use custom values from config
+            kv_max = float(cfg.get("kv_max", 0.7) or 0.7)
+            n_positions = int(cfg.get("positions", 8) or 8)
+            valve = Valve(kv_max=kv_max, n=n_positions, valve_name="Custom")
+        else:
+            # For predefined valves, use the valve's own configuration
+            valve = Valve(valve_name=valve_type)
+            config = valve.get_config()
+            if config:
+                kv_max = config["kv_values"][-1]
+                n_positions = config["positions"]
+            else:
+                # Fallback to defaults if valve config not found
+                kv_max = 0.7
+                n_positions = 8
+                valve = Valve(kv_max=kv_max, n=n_positions, valve_name="Custom")
+
+        # Calculate valve pressure loss
         merged_df["Valve pressure loss N"] = merged_df["Mass flow rate"].apply(valve.calculate_pressure_valve_kv)
-        merged_df = valve.calculate_kv_position_valve(
-            merged_df, custom_kv_max=float(cfg.get("kv_max", 0.7) or 0.7), n=int(cfg.get("positions", 8) or 8)
-        )
+
+        # Calculate valve positions
+        if valve_type == "Custom":
+            merged_df = valve.calculate_kv_position_valve(
+                merged_df,
+                custom_kv_max=kv_max,
+                n=n_positions
+            )
+        else:
+            # For predefined valves, use the valve's own configuration
+            merged_df = valve.calculate_kv_position_valve(merged_df)
 
         merged_cols = [{"name": c, "id": c} for c in merged_df.columns]
         merged_data = merged_df.to_dict("records")
@@ -1303,7 +1643,7 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         total_heat_loss = merged_df.get("Calculated heat loss", pd.Series()).fillna(0).sum()
         total_power = merged_df.get("Radiator power 75/65/20", pd.Series()).fillna(0).sum()
 
-        # Create Power Distribution Chart (grouped bar chart showing required vs available power)
+        # Power Distribution Chart
         if "Radiator power 75/65/20" in merged_df.columns and "Calculated heat loss" in merged_df.columns:
             fig_power = go.Figure()
             fig_power.add_trace(go.Bar(
@@ -1325,48 +1665,36 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         else:
             fig_power = empty_fig("Power distribution data not available")
 
-        # Create Temperature Profile Chart
+        # Temperature Profile Chart
         if "Supply Temperature" in merged_df.columns and "Return Temperature" in merged_df.columns and "Space Temperature" in merged_df.columns:
             fig_temp = go.Figure()
             fig_temp.add_trace(go.Scatter(
-                x=merged_df["Radiator nr"],
-                y=merged_df["Supply Temperature"],
-                mode='lines+markers',
-                name='Supply',
-                line=dict(color='#e74c3c', width=3),
-                marker=dict(size=8),
+                x=merged_df["Radiator nr"], y=merged_df["Supply Temperature"],
+                mode='lines+markers', name='Supply',
+                line=dict(color='#e74c3c', width=3), marker=dict(size=8),
                 hovertemplate='<b>Radiator %{x}</b><br>Supply: %{y:.1f}°C<extra></extra>'
             ))
             fig_temp.add_trace(go.Scatter(
-                x=merged_df["Radiator nr"],
-                y=merged_df["Return Temperature"],
-                mode='lines+markers',
-                name='Return',
-                line=dict(color='#3498db', width=3),
-                marker=dict(size=8),
+                x=merged_df["Radiator nr"], y=merged_df["Return Temperature"],
+                mode='lines+markers', name='Return',
+                line=dict(color='#3498db', width=3), marker=dict(size=8),
                 hovertemplate='<b>Radiator %{x}</b><br>Return: %{y:.1f}°C<extra></extra>'
             ))
             fig_temp.add_trace(go.Scatter(
-                x=merged_df["Radiator nr"],
-                y=merged_df["Space Temperature"],
-                mode='lines+markers',
-                name='Space',
-                line=dict(color='#27ae60', width=2, dash='dash'),
-                marker=dict(size=6),
+                x=merged_df["Radiator nr"], y=merged_df["Space Temperature"],
+                mode='lines+markers', name='Space',
+                line=dict(color='#27ae60', width=2, dash='dash'), marker=dict(size=6),
                 hovertemplate='<b>Radiator %{x}</b><br>Space: %{y:.1f}°C<extra></extra>'
             ))
             fig_temp = fix_fig(fig_temp, "Temperature Profile")
         else:
             fig_temp = empty_fig("Temperature data not available")
 
-        # Create Pressure Loss Chart (enhanced bar chart with color gradient)
+        # Pressure Loss Chart
         if "Total Pressure Loss" in merged_df.columns:
             fig_pressure = px.bar(
-                merged_df,
-                x="Radiator nr",
-                y="Total Pressure Loss",
-                color="Total Pressure Loss",
-                color_continuous_scale="Viridis",
+                merged_df, x="Radiator nr", y="Total Pressure Loss",
+                color="Total Pressure Loss", color_continuous_scale="Viridis",
                 hover_data=["Collector"] if "Collector" in merged_df.columns else None
             )
             fig_pressure.update_traces(
@@ -1376,14 +1704,11 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         else:
             fig_pressure = empty_fig("Total Pressure Loss (column not found)")
 
-        # Create Mass Flow Rate Chart (enhanced bar chart)
+        # Mass Flow Rate Chart
         if "Mass flow rate" in merged_df.columns:
             fig_mass = px.bar(
-                merged_df,
-                x="Radiator nr",
-                y="Mass flow rate",
-                color="Mass flow rate",
-                color_continuous_scale="Blues",
+                merged_df, x="Radiator nr", y="Mass flow rate",
+                color="Mass flow rate", color_continuous_scale="Blues",
                 hover_data=["Collector"] if "Collector" in merged_df.columns else None
             )
             fig_mass.update_traces(
@@ -1393,20 +1718,16 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         else:
             fig_mass = empty_fig("Mass Flow Rate (column not found)")
 
-        # Create Valve Position Chart (scatter with markers)
+        # Valve Position Chart
         valve_y = None
         for candidate in ["Valve position", "kv_position", "Valve pressure loss N"]:
             if candidate in merged_df.columns:
                 valve_y = candidate
                 break
-
         if valve_y:
             fig_valve = px.bar(
-                merged_df,
-                x="Radiator nr",
-                y=valve_y,
-                color=valve_y,
-                color_continuous_scale="RdYlGn_r",
+                merged_df, x="Radiator nr", y=valve_y,
+                color=valve_y, color_continuous_scale="RdYlGn_r",
                 hover_data=["Collector"] if "Collector" in merged_df.columns else None
             )
             fig_valve.update_traces(
@@ -1448,3 +1769,79 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
         )
 
 
+# --------------------------
+# Valve Selection Callbacks
+# --------------------------
+
+@app.callback(
+    [Output("valve-specs", "children"),
+     Output("valve-custom-settings", "style")],
+    [Input("valve-type-dropdown", "value")]
+)
+def update_valve_info(selected_valve):
+    if selected_valve == "Custom":
+        return "", {"display": "block"}
+
+    try:
+        valve = Valve(valve_name=selected_valve)
+        config = valve.get_config()
+        if config:
+            specs = [
+                html.Div(f"Positions: {config['positions']}"),
+                html.Div(f"Kv Range: {config['kv_values'][1]} - {config['kv_values'][-1]} m³/h")
+            ]
+            return specs, {"display": "none"}
+    except Exception as e:
+        print(f"Error getting valve config: {e}")
+
+    return "Error loading valve specs", {"display": "block"}
+
+
+@app.callback(
+    [Output("positions", "value"),
+     Output("kv_max", "value")],
+    [Input("valve-type-dropdown", "value")]
+)
+def update_valve_defaults(selected_valve):
+    if selected_valve == "Custom":
+        return no_update, no_update
+
+    try:
+        valve = Valve(valve_name=selected_valve)
+        config = valve.get_config()
+        if config:
+            return config["positions"], config["kv_values"][-1]
+    except Exception as e:
+        print(f"Error updating valve defaults: {e}")
+
+    return no_update, no_update
+
+
+@app.callback(
+    Output("config-store", "data", allow_duplicate=True),
+    [Input("valve-type-dropdown", "value"),
+     Input("positions", "value"),
+     Input("kv_max", "value")],
+    [State("config-store", "data")],
+    prevent_initial_call=True
+)
+def update_valve_config(selected_valve, positions, kv_max, current_cfg):
+    if current_cfg is None:
+        current_cfg = {}
+
+    if selected_valve == "Custom":
+        current_cfg["valve_type"] = "Custom"
+        current_cfg["positions"] = positions
+        current_cfg["kv_max"] = kv_max
+    else:
+        try:
+            valve = Valve(valve_name=selected_valve)
+            config = valve.get_config()
+            if config:
+                current_cfg["valve_type"] = selected_valve
+                current_cfg["positions"] = config["positions"]
+                current_cfg["kv_max"] = config["kv_values"][-1]
+        except Exception as e:
+            print(f"Error updating valve config: {e}")
+
+    return current_cfg
