@@ -7,7 +7,7 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, no_update, c
 import plotly.express as px
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
-from simpleLoadModel import RoomLoadCalculator
+from utils.simpleLoadModel import RoomLoadCalculator
 from utils.helpers import (
     POSSIBLE_DIAMETERS, Radiator, Circuit, Collector, Valve,
     validate_data, calculate_weighted_delta_t
