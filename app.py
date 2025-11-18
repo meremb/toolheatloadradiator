@@ -7,7 +7,7 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, no_update, c
 import plotly.express as px
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
-from utils.simpleLoadModel import RoomLoadCalculator
+from simpleLoadModel import RoomLoadCalculator
 from utils.helpers import (
     POSSIBLE_DIAMETERS, Radiator, Circuit, Collector, Valve,
     validate_data, calculate_weighted_delta_t
@@ -500,7 +500,7 @@ main_layout = dbc.Container(
                                                 dbc.CardHeader("🌡️ Outdoor Conditions"),
                                                 dbc.CardBody([
                                                     dbc.Label("Outdoor Temperature (°C)"),
-                                                    dbc.Input(id="tout", type="number", value=-7.0, step=0.5),
+                                                    dbc.Input(id="tout", type="number", min=-12.0, max=40.0, value=-7.0, step=0.5),
                                                     dbc.FormText("Design outdoor winter temperature"),
                                                 ])
                                             ], className="mb-4", id="outdoor-conditions-card"),
@@ -676,7 +676,20 @@ main_layout = dbc.Container(
                                                     dbc.Label("Delta T (°C)"),
                                                     dbc.Input(id="delta_T", type="number", min=3, max=20, step=1, value=5),
                                                     html.Br(),
-                                                    html.Div("Optional Inputs", className="form-label fw-bold mt-3"),
+                                                    html.Div([
+                                                        html.Span("Optional Inputs",
+                                                                  className="form-label fw-bold mt-3 me-2"),
+                                                        html.Span(
+                                                            html.I(className="bi bi-info-circle text-warning",
+                                                                   id="experimental-tooltip"),
+                                                            className="align-middle"
+                                                        ),
+                                                        dbc.Tooltip(
+                                                            "⚠️ Experimental: These inputs may result in unexpected behavior. Use with caution.",
+                                                            target="experimental-tooltip",
+                                                            placement="right"
+                                                        ),
+                                                    ]),
                                                     dbc.Label("Supply temperature (°C)"),
                                                     dbc.Input(id="supply_temp_input", type="number", placeholder="(optional)"),
                                                     html.Br(),
@@ -756,8 +769,11 @@ main_layout = dbc.Container(
                                                             for c in ["Room", "Collector", "Radiator power 75/65/20", "Length circuit", "Electric power"]
                                                         ] + [{'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(248, 248, 248)'}],
                                                         tooltip_header={
+                                                            "Radiator": "Radiator number.",
+                                                            "Room": "Select the correct room for the radiator.",
+                                                            "Collector": "Select the corresponding collector for the radiator.",
                                                             "Radiator power 75/65/20": "Nominal power at 75/65/20 (W).",
-                                                            "Length circuit": "Pipe circuit length (m) to/from the radiator.",
+                                                            "Length circuit": "Circuit length (m) = distance collector to the radiator.",
                                                             "Space Temperature": "Target room temperature (°C).",
                                                             "Electric power": "Extra electric power added for heating."
                                                         },
@@ -776,6 +792,10 @@ main_layout = dbc.Container(
                                                             {"name": "Collector circuit length", "id": "Collector circuit length", "type": "numeric"},
                                                         ],
                                                         data=[], page_size=10,
+                                                        tooltip_header={
+                                                            "Collector": "Collector name.",
+                                                            "Collector circuit length": "Circuit length (m) = distance generator to collector.",
+                                                        },
                                                         style_cell={'padding': '8px', 'border': '1px solid #dee2e6'},
                                                         style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold', 'textAlign': 'center'},
                                                         style_data_conditional=[
@@ -1019,7 +1039,7 @@ help_layout = dbc.Container([
     html.H4("Hulpmiddelen"),
     html.Ul([
         html.Li(dcc.Link("HeatLoad Tool", href="https://heatload.buildwise.be/", target="_blank")),
-	    html.Li(dcc.Link("Powerheat Tool", href="https://powerheat.buildwise.be/", target="_blank")),
+        html.Li(dcc.Link("Powerheat Tool", href="https://powerheat.buildwise.be/", target="_blank")),
         html.Li(dcc.Link("SmartHeating Project Overzicht", href="https://smartheating.be", target="_blank")),
     ]),
     html.H4("Contact"),
@@ -1246,7 +1266,7 @@ def compute_rooms_and_table(
         u_roof=safe_to_float(u_roof, 0.2) or 0.2,
         u_ground=safe_to_float(u_ground, 0.3) or 0.3,
         u_glass=safe_to_float(u_glass, 0.2) or 0.2,
-        tout=safe_to_float(tout, -7.0) or -7.0,
+        tout=safe_to_float(tout) if tout is not None else -7.0,
         heat_loss_area_estimation="fromFloorArea",
         ventilation_calculation_method=vcalc or "simple",
         v_system=vsys or "C",
@@ -1637,18 +1657,18 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
             fig_valve = empty_fig("Valve (column not found)")
 
         # Format metrics
-        metric_total_heat_loss = f"{total_heat_loss:,.0f} W" if total_heat_loss > 0 else "0 W"
-        metric_total_power = f"{total_power:,.0f} W" if total_power > 0 else "0 W"
+        metric_total_heat_loss = f"{total_heat_loss:.0f} W" if total_heat_loss > 0 else "0 W"
+        metric_total_power = f"{total_power:.0f} W" if total_power > 0 else "0 W"
         metric_flow_rate = f"{total_mass_flow_rate:.2f} kg/h" if total_mass_flow_rate > 0 else "0 kg/h"
         metric_delta_t = f"{weighted_delta_t:.2f} °C" if weighted_delta_t > 0 else "0 °C"
-        metric_highest_supply = f"{supply_temp:.1f}°C - Radiator {radiator_nr}"
+        metric_highest_supply = f"{supply_temp:.1f} °C - Radiator {radiator_nr}"
 
 
         summary = html.Ul([
             html.Li(f"Weighted Delta T: {weighted_delta_t:.2f} °C"),
             html.Li(f"Total Mass Flow Rate: {total_mass_flow_rate:.2f} kg/h"),
-            html.Li(f"Total Heat Loss: {total_heat_loss:,.0f} W"),
-            html.Li(f"Total Radiator Power: {total_power:,.0f} W"),
+            html.Li(f"Total Heat Loss: {total_heat_loss:.0f} W"),
+            html.Li(f"Total Radiator Power: {total_power:.0f} W"),
             html.Li(f"Highest supply T: {metric_highest_supply}"),
             html.Li(f"Radiators: {len(rad_df)} — Collectors: {len(col_df)}")
         ])
@@ -1661,10 +1681,18 @@ def compute_results(radiator_rows, collector_rows, split_rows, cfg, room_rows):
             metric_total_heat_loss, metric_total_power, metric_flow_rate, metric_delta_t, metric_highest_supply
         )
 
+
     except Exception as e:
-        warn = html.Div(f"❌ Error during calculation: {e}")
+        # Convert the error message to handle multi-line output
+        error_lines = str(e).split('\n')
+        warn = html.Div([
+                            html.Div("❌ Error during calculation:", className="fw-bold")
+                        ] + [
+                            html.Div(line) for line in error_lines if line.strip()
+                        ], className="alert alert-danger")
         return (
-            warn, [], [], [], [],
+            warn,  # This will now show multi-line errors properly
+            [], [], [], [],
             empty_fig(""), empty_fig(""), empty_fig(""), "",
             empty_fig(""), empty_fig(""),
             "0 W", "0 W", "0 kg/h", "0 °C", "0 °C"
@@ -1744,3 +1772,5 @@ def update_valve_config(selected_valve, positions, kv_max, current_cfg):
             print(f"Error updating valve config: {e}")
     
     return current_cfg
+
+
