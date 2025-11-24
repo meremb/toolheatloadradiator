@@ -1118,27 +1118,64 @@ def set_default_u_values(
     Input("num_rooms", "value"),
     prevent_initial_call=False
 )
-def build_room_table(num_rooms):
+def build_room_table(num_rooms, existing_data):
+
+    # --- Number of rooms ---
     try:
         num_rooms = int(num_rooms) if (num_rooms and int(num_rooms) > 0) else 1
     except Exception:
         num_rooms = 1
+
+    # --- Columns stay unchanged ---
     columns = [
         {"name": "Room #", "id": "Room #", "type": "numeric"},
-        {"name": "Indoor Temp (°C)", "id": "Indoor Temp (°C)", "type": "numeric", "editable": True, "presentation": "input"},
+        {"name": "Indoor Temp (°C)", "id": "Indoor Temp (°C)", "type": "numeric",
+         "editable": True, "presentation": "input"},
         {"name": "Floor Area (m²)", "id": "Floor Area (m²)", "type": "numeric"},
         {"name": "Walls external", "id": "Walls external", "type": "numeric", "presentation": "dropdown"},
         {"name": "Room Type", "id": "Room Type", "type": "text", "presentation": "dropdown"},
         {"name": "On Ground", "id": "On Ground", "type": "any", "presentation": "dropdown"},
         {"name": "Under Roof", "id": "Under Roof", "type": "any", "presentation": "dropdown"},
     ]
-    data = default_room_table(num_rooms)
+
+    # --- If no existing data, create defaults ---
+    if not existing_data:
+        data = default_room_table(num_rooms)
+
+    else:
+        # Number of currently filled rows
+        current_rows = len(existing_data)
+
+        if num_rooms > current_rows:
+            # Add new rows while keeping existing ones
+            data = existing_data.copy()
+            for i in range(current_rows + 1, num_rooms + 1):
+                data.append({
+                    "Room #": i,
+                    "Indoor Temp (°C)": 20.0,
+                    "Floor Area (m²)": 10.0,
+                    "Walls external": 2,
+                    "Room Type": "room",
+                    "On Ground": False,
+                    "Under Roof": False
+                })
+
+        elif num_rooms < current_rows:
+            # Trim rows
+            data = existing_data[:num_rooms]
+
+        else:
+            # No change in number of rooms
+            data = existing_data
+
+    # --- Dropdown definitions ---
     dropdown = {
         "Room Type": {"options": [{"label": str(v), "value": v} for v in ROOM_TYPE_OPTIONS]},
         "On Ground": {"options": [{"label": "No", "value": False}, {"label": "Yes", "value": True}]},
         "Under Roof": {"options": [{"label": "No", "value": False}, {"label": "Yes", "value": True}]},
-        "Walls external": {"options": [{"label": str(v), "value": v} for v in [1,2,3,4]]},
+        "Walls external": {"options": [{"label": str(v), "value": v} for v in [1, 2, 3, 4]]},
     }
+
     return columns, data, dropdown
 
 # NEW: toggle manual card and banner text on Tab 1
