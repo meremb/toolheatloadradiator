@@ -74,11 +74,11 @@ class Circuit:
     mass_flow_rate: float
 
     def calculate_pressure_loss_piping(self) -> float:
-        """Calculate the pressure loss for the piping."""
+        """Calculate the pressure loss for the piping with length defined as distance radiator to collector."""
         kv_piping = 51626 * (self.diameter / 1000) ** 2 - 417.39 * (self.diameter / 1000) + 1.5541
         resistance_meter = 97180 * (self.mass_flow_rate / 1000 / kv_piping) ** 2
         coefficient_local_losses = 1.3
-        pressure_loss_pipe = resistance_meter * self.length_circuit * coefficient_local_losses
+        pressure_loss_pipe = resistance_meter * self.length_circuit * 2 * coefficient_local_losses
         return round(pressure_loss_pipe, 1)
 
     def calculate_pressure_radiator_kv(self) -> float:
