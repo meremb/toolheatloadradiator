@@ -1116,6 +1116,7 @@ def set_default_u_values(
     Output("room-table", "data"),
     Output("room-table", "dropdown"),
     Input("num_rooms", "value"),
+    State("room-table", "data"),
     prevent_initial_call=False
 )
 def build_room_table(num_rooms, existing_data):
