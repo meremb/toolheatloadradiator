@@ -1,18 +1,18 @@
 import math
 from dataclasses import dataclass, field
-
 import numpy as np
 import pandas as pd
-
 from typing import List, Dict, Optional
 
-POSSIBLE_DIAMETERS = [8, 10, 12, 13, 14, 16, 20, 22, 25, 28, 36]
+POSSIBLE_DIAMETERS = [8, 10, 12, 13, 14, 16, 20, 22, 25, 28, 36, 50]
 T_FACTOR = 49.83
 EXPONENT_RADIATOR = 1.34
 PRESSURE_LOSS_BOILER = 350
 AVAILABLE_RADIATOR_POWERS = [2000, 2500, 3000, 3500, 4000]
 
-
+# -----------------------
+# Radiator
+# -----------------------
 @dataclass
 class Radiator:
     q_ratio: float
@@ -24,17 +24,22 @@ class Radiator:
     mass_flow_rate: float = field(init=False)
 
     def __post_init__(self):
-        self.supply_temperature = self.calculate_tsupply()
+        if self.supply_temperature is None:
+            self.supply_temperature = self.calculate_tsupply()
         self.return_temperature = self.calculate_treturn(self.supply_temperature)
         self.mass_flow_rate = self.calculate_mass_flow_rate()
 
     def calculate_c(self) -> float:
         """Calculate the constant 'c' based on Q_ratio and delta_T."""
-        return math.exp(self.delta_t / T_FACTOR / self.q_ratio ** (1 / EXPONENT_RADIATOR))
+        return math.exp(self.delta_t / T_FACTOR / self.q_ratio ** (1 / EXPONENT_RADIATOR)) if self.q_ratio > 0 else float('inf')
 
     def calculate_tsupply(self) -> float:
         """Calculate the supply temperature based on space temperature, constant_c, and delta_T."""
         constant_c = self.calculate_c()
+        # Guard for non-physical values
+        if constant_c <= 1:
+            # fallback: small lift above room temp
+            return round(self.space_temperature + max(self.delta_t, 3.0), 1)
         t_supply = self.space_temperature + (constant_c / (constant_c - 1)) * self.delta_t
         return round(t_supply, 1)
 
@@ -48,25 +53,35 @@ class Radiator:
         """
         Calculate the mass flow rate based on supply and return temperatures and heat loss.
         """
-        mass_flow_rate = self.heat_loss / 4180 / (self.supply_temperature - self.return_temperature) * 3600
+        dT = max(self.supply_temperature - self.return_temperature, 0.1)  # avoid division by zero
+        mass_flow_rate = self.heat_loss / 4180 / dT * 3600
         return round(mass_flow_rate, 1)
 
-    def calculate_diameter(self, possible_diameters: List[int]) -> float:
-        """Calculate the nearest acceptable pipe diameter based on the mass flow rate."""
+    def calculate_diameter(self, possible_diameters: List[int], fixed_diameter: Optional[float] = None) -> float:
+        """Calculate the nearest acceptable pipe diameter, or use a fixed diameter if provided."""
+        if fixed_diameter is not None:
+            return float(fixed_diameter)
+
         if math.isnan(self.mass_flow_rate):
             raise ValueError("The mass flow rate cannot be NaN. Check the configuration of the number of collectors.")
+        if self.mass_flow_rate < 0:
+            raise ValueError(
+                f"Invalid mass flow rate: {self.mass_flow_rate}.\n"
+                "Please check your input values: Increase the radiator power, delta T and the optional supply temperature or fixed diameter settings."
+            )
         diameter = 1.4641 * self.mass_flow_rate ** 0.4217
         acceptable_diameters = [d for d in possible_diameters if d >= diameter]
-
         if not acceptable_diameters:
             raise ValueError(
-                f"Calculated diameter exceeds the maximum allowable diameter for mass flow rate: {self.mass_flow_rate}")
+                f"Calculated diameter exceeds the maximum allowable diameter for mass flow rate: {self.mass_flow_rate}\n"
+                "Recommended solution: With a low delta T and a high mass flow rate\n"
+                "Increase the supply temperature and/or add extra radiator in the most crucial room"
+            )
         return min(acceptable_diameters, key=lambda x: abs(x - diameter))
 
-
-
-
-
+# -----------------------
+# Circuit
+# -----------------------
 @dataclass
 class Circuit:
     length_circuit: float
@@ -74,7 +89,7 @@ class Circuit:
     mass_flow_rate: float
 
     def calculate_pressure_loss_piping(self) -> float:
-        """Calculate the pressure loss for the piping with length defined as distance radiator to collector."""
+        """Calculate the pressure loss for the piping."""
         kv_piping = 51626 * (self.diameter / 1000) ** 2 - 417.39 * (self.diameter / 1000) + 1.5541
         resistance_meter = 97180 * (self.mass_flow_rate / 1000 / kv_piping) ** 2
         coefficient_local_losses = 1.3
@@ -101,6 +116,10 @@ class Circuit:
         return round((pressure_loss_piping + pressure_loss_collector), 1)
 
 
+
+# -----------------------
+# Collector
+# -----------------------
 @dataclass
 class Collector:
     name: str
@@ -118,16 +137,15 @@ class Collector:
             raise ValueError("The mass flow rate cannot be NaN. Check the configuration of the number of collectors.")
         diameter = 1.4641 * self.mass_flow_rate ** 0.4217
         acceptable_diameters = [d for d in possible_diameters if d >= diameter]
-
         if not acceptable_diameters:
             raise ValueError(
-                f"Calculated diameter exceeds the maximum allowable diameter for mass flow rate: {self.mass_flow_rate}")
+                f"Calculated diameter exceeds the maximum allowable diameter for mass flow rate: {self.mass_flow_rate}"
+            )
         return min(acceptable_diameters, key=lambda x: abs(x - diameter))
 
     def calculate_total_pressure_loss(self, radiator_df: pd.DataFrame, collector_df: pd.DataFrame) -> pd.DataFrame:
         """
         Merge radiator DataFrame with collector DataFrame on 'Collector' column and calculate total pressure loss.
-
         For radiators connected to Collector 1, add pressure losses from all subsequent collectors (2, 3, etc.).
         For radiators connected to Collector 2, add pressure losses from subsequent collectors (3, etc.).
         For radiators connected to the last collector, only add the pressure loss of its own collector.
@@ -138,57 +156,58 @@ class Collector:
         collector_pressure_loss_map = edited_collector_df.set_index('Collector')['Collector pressure loss'].to_dict()
         collectors = list(collector_pressure_loss_map.keys())
         total_pressure_losses = []
-        for idx, row in merged_df.iterrows():
+        for _, row in merged_df.iterrows():
             current_collector_index = collectors.index(row['Collector'])
             additional_pressure_loss = sum(
-                collector_pressure_loss_map[collectors[i]] for i in range(current_collector_index, len(collectors)))
+                collector_pressure_loss_map[collectors[i]] for i in range(current_collector_index, len(collectors))
+            )
             total_pressure_loss = row['Pressure loss'] + additional_pressure_loss + PRESSURE_LOSS_BOILER
             total_pressure_losses.append(total_pressure_loss)
-
         merged_df['Total Pressure Loss'] = total_pressure_losses
         return merged_df
 
-
+# -----------------------
+# Valve
+# -----------------------
 @dataclass
 class Valve:
     kv_max: float = 0.7  # Default kv_max value
-    n: int = 100  # Default number of valve positions
+    n: int = 100         # Default number of valve positions
     valve_name: Optional[str] = None
 
-    # Valve configurations
     VALVE_CONFIGS = {
         "Danfoss RA-N 10 (3/8)": {
-            "positions": 8,  # 0-5 positions
+            "positions": 8,
             "kv_values": [0.04, 0.08, 0.12, 0.19, 0.25, 0.33, 0.38, 0.56],
             "description": "Danfoss RA-N 10 (3/8) - 8-position TRV"
         },
         "Danfoss RA-N 15 (1/2)": {
-            "positions": 8,  # 0-5 positions
+            "positions": 8,
             "kv_values": [0.04, 0.08, 0.12, 0.20, 0.30, 0.40, 0.51, 0.73],
             "description": "Danfoss RA-N 10 (1/2) - 8-position TRV"
         },
         "Danfoss RA-N 20 (3/4)": {
-            "positions": 8,  # 0-5 positions
+            "positions": 8,
             "kv_values": [0.10, 0.15, 0.17, 0.26, 0.35, 0.46, 0.73, 1.04],
             "description": "Danfoss RA-N 20 (3/4) - 8-position TRV"
         },
         "Oventrop DN15 (1/2)": {
-            "positions": 9,  # 0-6 positions
+            "positions": 9,
             "kv_values": [0.05, 0.09, 0.14, 0.20, 0.26, 0.32, 0.43, 0.57, 0.67],
             "description": "Oventrop DN15 (1/2) - 9-position TRV"
         },
         "Heimeier (1/2)": {
-            "positions": 8,  # 0-4 positions
+            "positions": 8,
             "kv_values": [0.049, 0.09, 0.15, 0.265, 0.33, 0.47, 0.59, 0.67],
             "description": "Heimeier (1/2) - 8-position TRV"
         },
         "Vogel und Noot": {
-            "positions": 5,  # 0-5 positions
+            "positions": 5,
             "kv_values": [0.13, 0.30, 0.43, 0.58, 0.75],
             "description": "Vogel und Noot - 5-position TRV"
         },
         "Comap": {
-            "positions": 6,  # 0-5 positions
+            "positions": 6,
             "kv_values": [0.028, 0.08, 0.125, 0.24, 0.335, 0.49],
             "description": "Comap - 6-position TRV"
         }
@@ -196,56 +215,42 @@ class Valve:
 
     @classmethod
     def get_valve_names(cls) -> List[str]:
-        """Return list of available valve names including 'Custom' option."""
         return ["Custom"] + list(cls.VALVE_CONFIGS.keys())
 
     def get_config(self) -> Optional[dict]:
-        """Get the valve configuration if a predefined valve is selected."""
         if not self.valve_name or self.valve_name == "Custom":
             return None
         return self.VALVE_CONFIGS.get(self.valve_name)
 
     def get_kv_at_position(self, position: int) -> float:
-        """Get the kv value at a specific position."""
         config = self.get_config()
         if config:
             return config["kv_values"][min(position, len(config["kv_values"]) - 1)]
         # For custom valve, calculate kv linearly
         return (position / (self.n - 1)) * self.kv_max if self.n > 1 else 0.0
 
-
     def calculate_pressure_valve_kv(self, mass_flow_rate: float) -> float:
-        """
-        Calculate pressure loss for thermostatic valve at position N.
-        """
+        """Calculate pressure loss for thermostatic valve at position N."""
         kv = self.kv_max
         config = self.get_config()
         if config:
-            # Use the maximum kv value for pressure loss calculation
             kv = config["kv_values"][-1]
-
         if kv <= 0:
             return float('inf')
-
         pressure_loss_valve = 97180 * (mass_flow_rate / 1000 / kv) ** 2
         return round(pressure_loss_valve, 1)
 
     def calculate_kv_needed(self, merged_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculate the kv needed for each valve position based on pressure loss and mass flow rate.
-        """
+        """Calculate the kv needed for each valve position based on pressure loss and mass flow rate."""
         merged_df = merged_df.copy()
         merged_df['Total pressure valve circuit'] = merged_df['Total Pressure Loss'] + merged_df['Valve pressure loss N']
         maximum_pressure = max(merged_df['Total pressure valve circuit'])
         merged_df['Pressure difference valve'] = maximum_pressure - merged_df['Total Pressure Loss']
         merged_df['kv_needed'] = (merged_df['Mass flow rate'] / 1000) / (merged_df['Pressure difference valve'] / 100000) ** 0.5
-        ## here we alredy have the kv needed for each radiator than we could just use a lookup table to find the position for the custom valve
         return merged_df
 
     def calculate_valve_position(self, a: float, b: float, c: float, kv_needed: np.ndarray) -> np.ndarray:
-        """
-        Calculate the valve position based on kv needed and polynomial coefficients.
-        """
+        """Calculate the valve position based on kv needed and polynomial coefficients."""
         discriminant = b ** 2 - 4 * a * (c - kv_needed)
         discriminant = np.where(discriminant < 0, 0, discriminant)
         root = -b + np.sqrt(discriminant) / (2 * a)
@@ -253,9 +258,7 @@ class Valve:
         return root
 
     def adjust_position_with_custom_values(self, kv_needed: np.ndarray) -> np.ndarray:
-        """
-        Adjust the valve position using custom kv_max and n values.
-        """
+        """Adjust the valve position using custom kv_max and n values."""
         ratio_kv = kv_needed / 0.7054
         adjusted_ratio_kv = (ratio_kv * self.kv_max) / self.kv_max
         ratio_position = np.clip(np.sqrt(adjusted_ratio_kv), 0, 1)
@@ -263,30 +266,24 @@ class Valve:
         return adjusted_position
 
     def calculate_kv_position_valve(self, merged_df: pd.DataFrame, custom_kv_max: float = None, n: int = None) -> pd.DataFrame:
-        """
-        Calculate the valve positions and update the DataFrame with the results.
-        """
+        """Calculate the valve positions and update the DataFrame with the results."""
         merged_df = self.calculate_kv_needed(merged_df)
         config = self.get_config()
-
         if config:
-            # Use predefined valve positions
             kv_values = np.array(config["kv_values"])
             n_positions = len(kv_values)
 
             def find_nearest_position(kv_needed):
-                # Find the first position where kv_value >= kv_needed
                 for i, kv in enumerate(kv_values):
                     if kv >= kv_needed:
                         return i
-                return n_positions - 1  # Return max position if kv_needed > all kv_values
+                return n_positions - 1
 
             merged_df['Valve position'] = merged_df['kv_needed'].apply(find_nearest_position)
             merged_df['Valve kv'] = merged_df['Valve position'].apply(lambda x: kv_values[x])
         else:
             a, b, c = 0.0114, -0.0086, 0.0446
             initial_positions = self.calculate_valve_position(a, b, c, merged_df['kv_needed'].to_numpy())
-
             if custom_kv_max is not None and n is not None:
                 self.kv_max = custom_kv_max
                 self.n = n
@@ -295,20 +292,19 @@ class Valve:
             else:
                 initial_positions = np.ceil(initial_positions)
                 merged_df['Valve position'] = initial_positions.flatten()
-
         return merged_df
 
     def calculate_position_valve_with_ratio(self, kv_max: float, n: int, kv_needed: np.ndarray) -> np.ndarray:
-        """
-        Calculate the valve position based on a custom kv_max value and number of positions.
-        """
+        """Calculate the valve position based on a custom kv_max value and number of positions."""
         ratio_kv = kv_needed / kv_max
         a, b, c = 0.8053, 0.1269, 0.0468
         ratio_position = self.calculate_valve_position(a, b, c, ratio_kv)
         final_position = np.ceil(ratio_position * n)
         return final_position
 
-
+# -----------------------
+# Validatie en hulpfuncties voor tabellen
+# -----------------------
 def validate_data(df: pd.DataFrame) -> bool:
     """Validate the input data to ensure all required fields are correctly filled."""
     required_columns = ['Radiator power 75/65/20', 'Calculated heat loss', 'Length circuit', 'Space Temperature']
@@ -324,7 +320,6 @@ def validate_data(df: pd.DataFrame) -> bool:
             df.at[index, 'Radiator power 75/65/20'] = radiator  # Overwrite with best power
     return True
 
-
 def warn_radiator_power(radiator_power: float, heat_loss: float, space_temperature: float) -> float:
     """Issue a warning if radiator power is lower than heat loss and suggest the best possible radiator power."""
     best_radiator_power = suggest_best_radiator_power(heat_loss, space_temperature=space_temperature)
@@ -332,72 +327,126 @@ def warn_radiator_power(radiator_power: float, heat_loss: float, space_temperatu
     print(f"Consider using a radiator with at least {best_radiator_power} power for optimal performance.")
     return best_radiator_power
 
-
-#todo add the supply temeprature as input and calculate than need power and add that to the column add power
 def suggest_best_radiator_power(heat_loss: float, space_temperature: float) -> float:
     """Suggest the best possible radiator power based on the supply temperature."""
     radiator_needed = None
-
     for value in sorted(AVAILABLE_RADIATOR_POWERS):
         if value > heat_loss + 100:
             radiator_needed = value
             break
     return radiator_needed
 
+# -----------------------
+# Extra power berekening en tabelfuncties (optioneel)
+# -----------------------
+def calculate_extra_power_needed(
+    radiator_power: float,
+    heat_loss: float,
+    supply_temp: float,
+    delta_t: float,
+    space_temperature: float
+) -> float:
+    """
+    Berekent extra genormaliseerd vermogen voor een radiator bij opgegeven supply temp en delta T.
 
-def calculate_radiator_data(edited_radiator_df: pd.DataFrame, delta_T: float,
-                            supply_temp_input: float = None) -> pd.DataFrame:
-    """Method to perform the calculations and return the updated radiator DataFrame."""
+    Let op:
+    - delta_t_ref = (75 + 65)/2 - 20 = gemiddelde water T (ref) - ruimte T (ref)
+    - delta_t_actual = ( (supply + return)/2 ) - space_temperature
+      waarbij return = supply - delta_t
+    """
 
-    # Validate data
-    numeric_columns = [
-        'Radiator power 75/65/20', 'Calculated heat loss', 'Length circuit', 'Space Temperature'
-    ]
-    edited_radiator_df[numeric_columns] = edited_radiator_df[numeric_columns].apply(pd.to_numeric, errors='coerce')
+    # --- sanitize inputs
+    try:
+        radiator_power = float(radiator_power or 0.0)
+        heat_loss = float(heat_loss or 0.0)
+        supply_temp = float(supply_temp)
+        delta_t = float(delta_t)
+        space_temperature = float(space_temperature)
+    except Exception:
+        return 0.0
 
-    if not validate_data(edited_radiator_df):
-        raise ValueError("Invalid input data. Please check your inputs.")
+    if not all(map(math.isfinite, [radiator_power, heat_loss, supply_temp, delta_t, space_temperature])):
+        return 0.0
+    if delta_t <= 0:
+        return 0.0
 
-    # Initialize radiators for calculations
+    # referentieconditie
+    delta_t_ref = (75.0 + 65.0) / 2.0 - 20.0  # 35 K
+
+    # actuele conditie
+    t_return = supply_temp - delta_t
+    t_mean = (supply_temp + t_return) / 2.0
+    delta_t_actual = t_mean - space_temperature
+
+    # zolang de gebruiker aan het typen is of T te laag is: nog niet rekenen
+    if delta_t_actual <= 0:
+        return 0.0
+
+    phi = max(delta_t_actual / delta_t_ref, 1e-6)  # vermijd 0
+    available_power = max(0.0, radiator_power) * (phi ** EXPONENT_RADIATOR)
+    extra_power_needed_actual = max(0.0, heat_loss - available_power)
+
+    # normalisatie naar 75/65/20
+    extra_power_normalized = extra_power_needed_actual / (phi ** EXPONENT_RADIATOR)
+    return float(extra_power_normalized)
+
+
+def calculate_radiator_data_with_extra_power(
+    radiator_df: pd.DataFrame,
+    delta_T: float = 3.0,
+    supply_temp_input: float = None,
+    fixed_diameter: float = None
+) -> pd.DataFrame:
+    """
+    Extra functionaliteit: vaste diameter, minimale delta T en extra vermogen berekenen.
+    """
+    radiator_df = radiator_df.copy()
+    radiator_df['Extra radiator power'] = 0.0
+
     radiators = []
-    for _, row in edited_radiator_df.iterrows():
+    for _, row in radiator_df.iterrows():
+        supply_temp = supply_temp_input if supply_temp_input is not None else row['Space Temperature'] + delta_T
+        extra_power = calculate_extra_power_needed(
+            radiator_power=row['Radiator power 75/65/20'],
+            heat_loss=row['Calculated heat loss'],
+            supply_temp=supply_temp,
+            delta_t=delta_T,
+            space_temperature=row['Space Temperature']
+        )
+        row['Extra radiator power'] = extra_power
+        q_ratio = (row['Calculated heat loss'] + extra_power) / row['Radiator power 75/65/20']
+
         radiator = Radiator(
-            q_ratio=(row['Calculated heat loss'] - row['Extra power']) / row['Radiator power 75/65/20'],  # moeten het mogelijk maken om als er een toevoertempeartuur gevraagd word hiermee aan te duiden hoeveel extra genormaliseerd vermogen nodig is extra als de huidige radiator niet voldoet
+            q_ratio=q_ratio,
             delta_t=delta_T,
             space_temperature=row['Space Temperature'],
-            heat_loss=row['Calculated heat loss']
+            heat_loss=row['Calculated heat loss'] + extra_power,
+            supply_temperature=supply_temp
         )
         radiators.append(radiator)
 
-    # Calculate supply temperature if not manually set
-    if supply_temp_input is not None:
-        max_supply_temperature = supply_temp_input
-        if max_supply_temperature < max(r.supply_temperature for r in radiators):
-            raise ValueError(
-                "Error: The maximum supply temperature must be greater than the maximum radiator supply temperature.")
-    else:
-        max_supply_temperature = max(r.supply_temperature for r in radiators)
-
-    # Perform calculations for supply temperature, return temperature, mass flow rate, etc.
+    max_supply_temperature = supply_temp_input if supply_temp_input is not None else max(r.supply_temperature for r in radiators)
     for r in radiators:
         r.supply_temperature = max_supply_temperature
         r.return_temperature = r.calculate_treturn(max_supply_temperature)
         r.mass_flow_rate = r.calculate_mass_flow_rate()
 
-    # Add calculated values to the DataFrame
-    edited_radiator_df['Supply Temperature'] = max_supply_temperature
-    edited_radiator_df['Return Temperature'] = [r.return_temperature for r in radiators]
-    edited_radiator_df['Mass flow rate'] = [r.mass_flow_rate for r in radiators]
-    edited_radiator_df['Diameter'] = [r.calculate_diameter(POSSIBLE_DIAMETERS) for r in radiators]
-    edited_radiator_df['Diameter'] = edited_radiator_df['Diameter'].max()
-    edited_radiator_df['Pressure loss'] = [
-        Circuit(length_circuit=row['Length circuit'], diameter=row['Diameter'], mass_flow_rate=row['Mass flow rate'])
-        .calculate_pressure_radiator_kv() for _, row in edited_radiator_df.iterrows()
+    radiator_df['Supply Temperature'] = max_supply_temperature
+    radiator_df['Return Temperature'] = [r.return_temperature for r in radiators]
+    radiator_df['Mass flow rate'] = [r.mass_flow_rate for r in radiators]
+    radiator_df['Diameter'] = [
+        r.calculate_diameter(POSSIBLE_DIAMETERS, fixed_diameter=fixed_diameter) for r in radiators
     ]
+    radiator_df['Diameter'] = radiator_df['Diameter'].max()
+    radiator_df['Pressure loss'] = [
+        Circuit(length_circuit=row['Length circuit'], diameter=row['Diameter'], mass_flow_rate=row['Mass flow rate']).calculate_pressure_radiator_kv()
+        for _, row in radiator_df.iterrows()
+    ]
+    return radiator_df
 
-    return edited_radiator_df
-
-
+# -----------------------
+# Weighted ΔT
+# -----------------------
 def calculate_weighted_delta_t(radiators, radiator_df):
     """
     Bereken de gewogen delta T voor het systeem.
@@ -410,13 +459,17 @@ def calculate_weighted_delta_t(radiators, radiator_df):
         float: Gewogen delta T.
     """
     total_mass_flow_rate = sum(radiator.mass_flow_rate for radiator in radiators)
+    if total_mass_flow_rate <= 0:
+        return 0.0
     weighted_delta_t = sum(
         row['Mass flow rate'] * (row['Supply Temperature'] - row['Return Temperature'])
         for (_, row), radiator in zip(radiator_df.iterrows(), radiators)
     ) / total_mass_flow_rate
-
     return weighted_delta_t
 
+# -----------------------
+# Optionele loaders (indien gebruikt elders)
+# -----------------------
 def load_radiator_data(num_radiators: int, collector_options: List[str]) -> pd.DataFrame:
     radiator_columns: List[str] = [
         'Radiator nr', 'Collector', 'Radiator power 75/65/20', 'Calculated heat loss',
@@ -428,26 +481,62 @@ def load_radiator_data(num_radiators: int, collector_options: List[str]) -> pd.D
         'Radiator power 75/65/20': [0.0] * num_radiators,
         'Calculated heat loss': [0.0] * num_radiators,
         'Length circuit': [0.0] * num_radiators,
-        'Space Temperature': [20.0] * num_radiators,  # Default space temperature
+        'Space Temperature': [20.0] * num_radiators,
         'Extra power': [0.0] * num_radiators,
     }
     return pd.DataFrame(radiator_initial_data, columns=radiator_columns)
 
-
 def load_collector_data(num_collectors: int) -> pd.DataFrame:
-    """
-    Laad de collector data.
-    """
     collector_columns: List[str] = ['Collector', 'Collector circuit length']
     collector_initial_data: Dict[str, List] = {
         'Collector': [f'Collector {i + 1}' for i in range(num_collectors)],
         'Collector circuit length': [0.0] * num_collectors,
     }
-
     return pd.DataFrame(collector_initial_data, columns=collector_columns)
 
+def calc_velocity(mass_flow_rate_kgph: float, diameter_mm: float) -> float:
+    """Calculate the velocity of water in a pipe."""
+    m_dot = float(mass_flow_rate_kgph) / 3600.0
+    d_m = float(diameter_mm) / 1000.0
+    area = math.pi * (d_m / 2) ** 2
+    rho = 1000.0
+    if area == 0:
+        return 0.0
+    v = m_dot / (rho * area)
+    return v
 
 
+def check_pipe_velocities(rad_df_local, col_df_local, max_velocity: float = 0.5, warnings_local: list = None):
+    """
+    Compute velocities for radiators and collectors, append 'Velocity (m/s)' columns and
+    add warnings to warnings_local when velocity > max_velocity.
+    Returns modified rad_df_local, col_df_local, warnings_local.
+    """
+    if warnings_local is None:
+        warnings_local = []
 
+    rad_df_local = rad_df_local.copy()
+    rad_vels = []
+    for _, row in rad_df_local.iterrows():
+        m_dot = row.get("Mass flow rate", 0.0) or 0.0  # kg/h
+        dia = row.get("Diameter", 0.0) or 0.0         # mm
+        v = calc_velocity(m_dot, dia)
+        rad_vels.append(round(v, 3))
+        if v > max_velocity:
+            rid = row.get("Radiator nr", row.get("Radiator", "?"))
+            warnings_local.append(f"High velocity in radiator {rid}: {v:.2f} m/s > {max_velocity:.2f} m/s")
+    rad_df_local["Velocity (m/s)"] = rad_vels
 
+    col_df_local = col_df_local.copy()
+    col_vels = []
+    for _, row in col_df_local.iterrows():
+        m_dot = row.get("Mass flow rate", 0.0) or 0.0
+        dia = row.get("Diameter", 0.0) or 0.0
+        v = calc_velocity(m_dot, dia)
+        col_vels.append(round(v, 3))
+        if v > max_velocity:
+            cname = row.get("Collector", "?")
+            warnings_local.append(f"High velocity in collector {cname}: {v:.2f} m/s > {max_velocity:.2f} m/s")
+    col_df_local["Velocity (m/s)"] = col_vels
 
+    return rad_df_local, col_df_local, warnings_local
